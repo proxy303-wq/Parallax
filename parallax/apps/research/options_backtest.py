@@ -91,6 +91,53 @@ def run_iron_condor(symbol, csv_path, months=3, dte=7, vol_premium=0.0,
     }
 
 
+
+
+def run_long_directional(symbol, csv_path, months=3, dte=7, vol_premium=0.0,
+                         delta=0.40, step=50.0, lot=None):
+    """Model backtest: weekly directional LONG option (buy call/put) held to
+    expiry.  Bias = SMA20 vs SMA50 (the ICT HTF bias).  Buying is a debit and
+    only wins when the directional move beats the premium paid."""
+    bars = load_ohlcv(csv_path, "5m")
+    daily = daily_bars(bars)
+    start = daily[-1].ts.date() - timedelta(days=months * 30)
+    start_idx = next(i for i, b in enumerate(daily) if b.ts.date() >= start)
+    closes = [b.close for b in daily]   # FULL history -> SMA warm-up
+    lot = lot or (65 if symbol == "NIFTY" else 60)
+    trades = []
+    i = max(50, start_idx)
+    while i < len(daily) - dte:
+        spot = daily[i].close
+        sma20 = sum(closes[i - 19:i + 1]) / 20.0
+        sma50 = sum(closes[i - 49:i + 1]) / 50.0
+        bullish = sma20 > sma50
+        sigma = realized_vol(closes[i - 20:i + 1]) * (1.0 + vol_premium)
+        T = dte / 365.0
+        flag = "c" if bullish else "p"
+        k = om.delta_strike(spot, sigma, dte, delta, "call" if bullish else "put") or spot
+        strike = om.round_to_step(k, step, "nearest")
+        premium = om.bs_price(spot, strike, T, sigma, flag)
+        spot_exp = daily[i + dte].close
+        intrinsic = max(0.0, spot_exp - strike) if flag == "c" else max(0.0, strike - spot_exp)
+        trades.append({
+            "entry_date": str(daily[i].ts.date()), "spot": round(spot, 1),
+            "bias": "CALL" if bullish else "PUT", "strike": strike,
+            "premium": round(premium, 2), "expiry_spot": round(spot_exp, 1),
+            "pnl_inr": round((intrinsic - premium) * lot, 0),
+        })
+        i += 5
+    wins = [t for t in trades if t["pnl_inr"] > 0]
+    return {
+        "symbol": symbol, "vol_premium": vol_premium, "n": len(trades),
+        "win_rate": round(len(wins) / len(trades), 3) if trades else 0.0,
+        "total_pnl": round(sum(t["pnl_inr"] for t in trades), 0),
+        "avg_premium": round(statistics.mean(t["premium"] * lot for t in trades), 0) if trades else 0,
+        "worst": round(min(t["pnl_inr"] for t in trades), 0) if trades else 0,
+        "best": round(max(t["pnl_inr"] for t in trades), 0) if trades else 0,
+        "trades": trades,
+    }
+
+
 def run_options_backtest(symbols=("NIFTY", "FINNIFTY"), months=3, vol_premiums=(0.0, 0.15)):
     paths = {"NIFTY": NIFTY_CSV, "FINNIFTY": FINNIFTY_CSV}
     out = []
