@@ -268,7 +268,7 @@ class DhanBroker(BrokerAdapter):
                 security_id=str(contract.security_id),
                 exchange_segment=self.exchange_segment,
                 transaction_type=str(side).upper(), quantity=units,
-                product_type="MARGIN", price=round(float(price), 2),
+                product_type=self.product_type, price=round(float(price), 2),
                 trigger_price=0)
             d = (res or {}).get("data") or res or {}
             return float(d.get("totalMargin") or 0.0)
@@ -292,7 +292,7 @@ class DhanBroker(BrokerAdapter):
             "correlationId": "PARALLAXOPT",
             "transactionType": str(side).upper(),
             "exchangeSegment": self.exchange_segment,
-            "productType": "MARGIN",
+            "productType": self.product_type,
             "orderType": otype,
             "validity": "DAY",
             "tradingSymbol": contract.trading_symbol,
