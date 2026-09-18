@@ -41,11 +41,19 @@ def _post(path: str, payload: dict, token: str, client_id: str, timeout: int = 2
         return json.loads(resp.read().decode())
 
 
+def _auth(token: str | None, client_id: str | None):
+    """Resolve the best token (saved SELF token preferred) + client id."""
+    cid = client_id or env("DHAN_CLIENT_ID")
+    if token is None:
+        token, _src = resolve_token(cid, env("DHAN_ACCESS_TOKEN"),
+                                    env("DHAN_PIN"), env("DHAN_TOTP_SECRET"))
+    return cid, token
+
+
 def fetch_expiries(symbol: str, token: str | None = None,
                    client_id: str | None = None) -> list[str]:
-    """Expiry list for an index underlying (needs a SELF token)."""
-    client_id = client_id or env("DHAN_CLIENT_ID")
-    token = token or env("DHAN_ACCESS_TOKEN")
+    """Expiry list for an index underlying (needs Data API subscription)."""
+    client_id, token = _auth(token, client_id)
     body = _post("/optionchain/expirylist",
                  {"UnderlyingScrip": underlying_id(symbol), "UnderlyingSeg": IDX_SEGMENT},
                  token, client_id)
@@ -58,8 +66,7 @@ def fetch_option_chain(symbol: str, expiry: str | None = None,
     """Live option chain (needs a SELF token).  Returns
     {underlying, expiry, spot, rows:[{strike, option_type, security_id, ltp,
     oi, volume, iv, bid, ask}]} or None on failure."""
-    client_id = client_id or env("DHAN_CLIENT_ID")
-    token = token or env("DHAN_ACCESS_TOKEN")
+    client_id, token = _auth(token, client_id)
     try:
         if not expiry:
             dates = fetch_expiries(symbol, token, client_id)
