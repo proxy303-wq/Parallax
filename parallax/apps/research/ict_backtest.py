@@ -27,7 +27,8 @@ class ICTBacktestEngine:
                  ict_config: ICTConfig | None = None,
                  exit_config: ExitConfig | None = None,
                  lookback: int = 600, warmup: int = 100,
-                 risk_pct: float = 0.005, fixed_lots: int | None = None):
+                 risk_pct: float = 0.005, fixed_lots: int | None = None,
+                 capital: float | None = None, max_lots: int | None = None):
         spec = spec_for(instrument.symbol)
         self.instrument = instrument
         self.ict_config = ict_config or ICTConfig()
@@ -36,8 +37,10 @@ class ICTBacktestEngine:
         self.warmup = warmup
         self.risk_pct = risk_pct
         self.fixed_lots = fixed_lots
+        self.max_lots = max_lots
         self.spec = spec
-        self.broker = PaperBroker(capital=spec.default_capital,
+        self.capital = float(capital) if capital else spec.default_capital
+        self.broker = PaperBroker(capital=self.capital,
                                   point_value=spec.point_value,
                                   currency=spec.currency,
                                   slippage=spec.slippage, fee_rate=spec.fee_rate)
@@ -116,6 +119,8 @@ class ICTBacktestEngine:
                             qty = self.fixed_lots
                         else:
                             qty = math.floor(risk_budget / per_unit / step) * step
+                        if self.max_lots is not None:
+                            qty = min(qty, self.max_lots)
                         # cost-to-vol gate (same as the main risk engine)
                         stop_pct = stop_dist / max(signal.entry, 1e-9)
                         rt_cost = 2.0 * (self.spec.fee_rate + self.spec.slippage)
@@ -144,7 +149,7 @@ class ICTBacktestEngine:
 
         result.final_equity = self.broker.get_account().equity
         result.metrics = compute_metrics(result.trades, result.final_equity,
-                                         self.spec.default_capital)
+                                         self.capital)
         return result
 
     def _state(self, bars, series, timeframe: str):

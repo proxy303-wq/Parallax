@@ -15,8 +15,11 @@ from parallax.contracts import DecisionClass, MarketState, TradeDecision
 class TelegramBot:
     def __init__(self, token: str | None = None, chat_id: str | None = None):
         from parallax.adapters.env import env
-        self.token = token or env("TELEGRAM_BOT_TOKEN")
-        self.chat_id = chat_id or env("TELEGRAM_CHAT_ID")
+        # dedicated PARALLAX bot first, fall back to the shared Athena bot
+        self.token = (token or env("PARALLAX_TELEGRAM_BOT_TOKEN")
+                      or env("TELEGRAM_BOT_TOKEN"))
+        self.chat_id = (chat_id or env("PARALLAX_TELEGRAM_CHAT_ID")
+                        or env("TELEGRAM_CHAT_ID"))
 
     @property
     def configured(self) -> bool:
@@ -67,6 +70,19 @@ class TelegramBot:
         return ("PARALLAX status\n"
                 f"mode={summary.get('mode')} state={summary.get('system_state')} "
                 f"equity={summary.get('equity')} daily={summary.get('daily_pnl')}")
+
+    def describe_portfolio(self, rows: list[dict]) -> str:
+        """Full PARALLAX feed: one line per instrument/strategy + account.
+        rows: [{label, mode, equity, daily_pnl, open_positions, note}]"""
+        lines = ["PARALLAX - full system"]
+        for r in rows:
+            line = (f"[{r.get('label', '?')}] equity={r.get('equity')} "
+                    f"daily={r.get('daily_pnl')} open={r.get('open_positions')} "
+                    f"({r.get('mode', '?')})")
+            if r.get("note"):
+                line += " " + str(r["note"])
+            lines.append(line)
+        return "\n".join(lines)
 
     # ---- transport -------------------------------------------------------
     def send(self, text: str) -> bool:

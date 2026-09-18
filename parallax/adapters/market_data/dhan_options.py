@@ -83,12 +83,17 @@ def fetch_option_chain(symbol: str, expiry: str | None = None,
                 iv = float(leg.get("implied_volatility") or 0.0)
                 if iv > 1.0:
                     iv = iv / 100.0
+                g = leg.get("greeks") or {}
                 rows.append({
                     "strike": strike, "option_type": otype.upper(),
                     "security_id": leg.get("security_id"), "ltp": float(ltp),
                     "oi": int(leg.get("oi") or 0), "volume": int(leg.get("volume") or 0),
                     "iv": iv, "bid": float(leg.get("top_bid_price") or 0.0),
                     "ask": float(leg.get("top_ask_price") or 0.0),
+                    "delta": float(g.get("delta") or 0.0),
+                    "theta": float(g.get("theta") or 0.0),
+                    "gamma": float(g.get("gamma") or 0.0),
+                    "vega": float(g.get("vega") or 0.0),
                 })
         return {"underlying": symbol, "expiry": str(expiry), "spot": spot, "rows": rows}
     except Exception:
