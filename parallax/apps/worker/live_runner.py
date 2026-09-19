@@ -50,6 +50,8 @@ class LiveRunner:
         self.last_bar_ts = None
         self.options_trader = None
         self.entered_on = None
+        self.armed_on = None
+        self.eod_on = None
         self.gates = {"skipped_stale": 0, "skipped_crossed": 0, "trades": 0}
 
     # ---- mode / broker ---------------------------------------------------
@@ -100,6 +102,45 @@ class LiveRunner:
             return px <= entry * 1.002      # allow 0.2% tolerance
         return px >= entry * 0.998
 
+    # ---- daily briefings -------------------------------------------------
+    def _armed_message(self, now) -> str:
+        today = now.date()
+        mode = self.store.mode().upper()
+        if futures_active(today):
+            engine = "FUTURES - NIFTY ICT scalper"
+            detail = f"{self.lots_futures} lots, intraday"
+            note = "0DTE engine is silent today (not an expiry day)."
+        elif options_active(today):
+            engine = "OPTIONS - NIFTY 0DTE hedged short strangle"
+            detail = f"{self.lots_options} lots, TP 50% / SL 2x"
+            note = "Futures engine is silent today (0DTE expiry day)."
+        else:
+            engine = "NONE"
+            detail = "-"
+            note = "No engine scheduled."
+        cap = self.store.capital()
+        equity = cap.get("equity", 0) or 0
+        if not equity:
+            try:
+                acct = self._broker().get_account()
+                equity = acct.equity
+                self.store.snapshot_capital(acct.equity, acct.cash, acct.margin_used)
+            except Exception:
+                equity = 0
+        return ("PARALLAX armed [" + mode + "]" + chr(10)
+                + today.strftime("%a %d %b") + " - " + engine + chr(10)
+                + detail + chr(10) + note + chr(10)
+                + f"Equity Rs{equity:,.0f}")
+
+    def _eod_message(self, now) -> str:
+        s = self.store.summary()
+        g = self.gates
+        return ("PARALLAX session close" + chr(10)
+                + now.strftime("%a %d %b") + chr(10)
+                + f"Trades today: {g['trades']}" + chr(10)
+                + f"Total P&L Rs{s['total_pnl']:+,.0f} ({s['n_trades']} trades)" + chr(10)
+                + f"Gates: stale {g['skipped_stale']}, crossed {g['skipped_crossed']}")
+
     # ---- main loop -------------------------------------------------------
     def run(self, max_seconds: int | None = None) -> dict:
         t0 = time.time()
@@ -108,6 +149,13 @@ class LiveRunner:
             try:
                 now = datetime.now(IST)
                 today = now.date()
+                if today.weekday() < 5:
+                    if now.hour == 9 and 15 <= now.minute <= 25 and self.armed_on != today:
+                        self._say(self._armed_message(now))
+                        self.armed_on = today
+                    if now.hour == 15 and now.minute >= 20 and self.eod_on != today:
+                        self._say(self._eod_message(now))
+                        self.eod_on = today
                 if today.weekday() < 5 and now.hour >= 9 and now.hour < 16:
                     bars = self._fetch_bars(now)
                     if bars:
