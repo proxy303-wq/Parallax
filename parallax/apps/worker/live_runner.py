@@ -54,6 +54,7 @@ class LiveRunner:
         self.eod_on = None
         self._broker_cache = None
         self._broker_mode = None
+        self._last_token_check = 0.0
         self.gates = {"skipped_stale": 0, "skipped_crossed": 0, "trades": 0}
 
     # ---- mode / broker ---------------------------------------------------
@@ -187,6 +188,13 @@ class LiveRunner:
             try:
                 now = datetime.now(IST)
                 today = now.date()
+                # periodic token health: refresh well before expiry, any hour
+                if time.time() - self._last_token_check > 1200:
+                    self._last_token_check = time.time()
+                    try:
+                        self._ensure_token()
+                    except Exception as e:
+                        print("token check error:", type(e).__name__, str(e)[:100])
                 if today.weekday() < 5:
                     if now.hour == 9 and 15 <= now.minute <= 25 and self.armed_on != today:
                         self._say(self._armed_message(now))
