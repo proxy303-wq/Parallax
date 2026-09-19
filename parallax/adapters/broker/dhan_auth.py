@@ -27,7 +27,10 @@ import urllib.request
 
 AUTH_BASE = "https://auth.dhan.co"
 API_BASE = "https://api.dhan.co/v2"
-DEFAULT_TOKEN_FILE = r"C:\Parallax\.dhan_token.txt"
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
+DEFAULT_TOKEN_FILE = os.environ.get("DHAN_TOKEN_FILE") or os.path.join(
+    _REPO_ROOT, ".dhan_token.txt")
 
 _B32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 
@@ -108,6 +111,56 @@ def generate_access_token(client_id: str, pin: str, totp_code: str) -> str | Non
     return data.get("accessToken", "") or None
 
 
+
+
+# ------------------------------------------------------------
+# token health + proactive refresh
+# ------------------------------------------------------------
+
+def token_status(token: str | None = None) -> dict:
+    """Report the access token's type and remaining life (health check)."""
+    tok = token or os.environ.get("DHAN_ACCESS_TOKEN") or load_saved_token() or ""
+    exp = token_expiry(tok)
+    hours = round((exp - time.time()) / 3600, 2) if exp else -1.0
+    ttype = ""
+    try:
+        payload = tok.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        ttype = json.loads(base64.urlsafe_b64decode(payload)).get("tokenConsumerType", "")
+    except Exception:
+        pass
+    return {"type": ttype, "hours_left": hours, "expires_at": exp,
+            "valid": hours > 0, "token_file": DEFAULT_TOKEN_FILE}
+
+
+def refresh_token(client_id: str, pin: str = "", totp_secret: str = "",
+                  min_hours: float = 12.0, notify=print) -> tuple:
+    """Proactively refresh the token before it lapses.
+
+    Order: RenewToken (keeps the SELF type, which market data needs) then TOTP
+    (fresh APP token - trading APIs work, market data may not).  Every TOTP
+    generation invalidates the previous token, so only call this when needed.
+    Returns (token, source)."""
+    tok = os.environ.get("DHAN_ACCESS_TOKEN") or load_saved_token() or ""
+    if tok and not token_is_expired(tok, margin_s=int(min_hours * 3600)):
+        return tok, "still valid"
+    if tok:
+        renewed = renew_token(client_id, tok)
+        if renewed and not token_is_expired(renewed, margin_s=0):
+            save_token(renewed)
+            notify("token refreshed via RenewToken")
+            return renewed, "renewed via RenewToken"
+    if pin and totp_secret:
+        if os.environ.get("PARALLAX_AUTO_GENERATE_TOKEN", "true").lower() == "false":
+            return None, "auto-generation disabled"
+        new = generate_access_token(client_id, pin, totp(totp_secret))
+        if new and not token_is_expired(new, margin_s=0):
+            save_token(new)
+            notify("token regenerated via TOTP")
+            return new, "regenerated via TOTP"
+    return None, "refresh failed (no usable token)"
+
+
 def load_saved_token(path: str = DEFAULT_TOKEN_FILE) -> str | None:
     try:
         if os.path.exists(path):
@@ -171,7 +224,9 @@ def resolve_token(client_id: str, access_token: str = "", pin: str = "",
 #   2. user opens consent_login_url() and logs in, pastes the redirect tokenId
 #   3. consume_consent()      -> accessToken (SELF)
 
-API_KEY_FILE = os.environ.get("DHAN_API_KEY_FILE", r"C:\Athena_X\dhan API KKEY.txt")
+API_KEY_FILE = os.environ.get(
+    "DHAN_API_KEY_FILE",
+    r"C:\Athena_X\dhan API KKEY.txt" if os.name == "nt" else "")
 
 
 def _value_after_label(line, label):

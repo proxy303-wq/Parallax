@@ -52,12 +52,36 @@ class LiveRunner:
         self.entered_on = None
         self.armed_on = None
         self.eod_on = None
+        self._broker_cache = None
+        self._broker_mode = None
         self.gates = {"skipped_stale": 0, "skipped_crossed": 0, "trades": 0}
 
     # ---- mode / broker ---------------------------------------------------
     def _broker(self) -> DhanBroker:
+        """Cached broker (one client per mode).  Rebuilt on a mode change or
+        after a token refresh so the SDK always holds a valid token."""
         live = self.store.mode() == "live"
-        return DhanBroker(dry_run=not live)
+        if self._broker_cache is None or self._broker_mode != live:
+            self._broker_cache = DhanBroker(dry_run=not live)
+            self._broker_mode = live
+        return self._broker_cache
+
+    def _ensure_token(self, force: bool = False) -> dict:
+        """Proactively refresh the Dhan token before it lapses.
+
+        Fires when the token has <12h left (or when forced after a failed
+        validation), so the TOTP path - which invalidates the previous token -
+        is not called needlessly."""
+        from parallax.adapters.broker.dhan_auth import refresh_token, token_status
+        from parallax.adapters.env import env
+        st = token_status()
+        if not force and st.get("hours_left", 99) >= 12:
+            return st
+        cid = env("DHAN_CLIENT_ID")
+        tok, src = refresh_token(cid, env("DHAN_PIN"), env("DHAN_TOTP_SECRET"))
+        self._broker_cache = None
+        self._say("[TOKEN] " + str(src) + " (was " + str(st.get("hours_left")) + "h left)")
+        return token_status()
 
     # ---- data ------------------------------------------------------------
     def _fetch_bars(self, day=None):
@@ -127,10 +151,15 @@ class LiveRunner:
                 self.store.snapshot_capital(acct.equity, acct.cash, acct.margin_used)
             except Exception:
                 equity = 0
+        try:
+            st = self._ensure_token()
+            tk = "Token " + str(st.get("type") or "?") + " " + str(st.get("hours_left")) + "h"
+        except Exception:
+            tk = "Token unknown"
         return ("PARALLAX armed [" + mode + "]" + chr(10)
                 + today.strftime("%a %d %b") + " - " + engine + chr(10)
                 + detail + chr(10) + note + chr(10)
-                + f"Equity Rs{equity:,.0f}")
+                + f"Equity Rs{equity:,.0f}" + chr(10) + tk)
 
     def _eod_message(self, now) -> str:
         s = self.store.summary()
@@ -145,6 +174,15 @@ class LiveRunner:
     def run(self, max_seconds: int | None = None) -> dict:
         t0 = time.time()
         self._say(f"PARALLAX live runner online [{self.store.mode().upper()}]")
+        # startup: validate the Dhan token and refresh if it is no longer accepted
+        try:
+            self._broker().get_account()
+        except Exception as e:
+            self._say("[TOKEN] validation failed - refreshing")
+            try:
+                self._ensure_token(force=True)
+            except Exception as e2:
+                self._say("[TOKEN] refresh error: " + str(e2)[:80])
         while True:
             try:
                 now = datetime.now(IST)
