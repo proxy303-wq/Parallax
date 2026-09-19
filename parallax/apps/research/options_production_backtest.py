@@ -70,52 +70,56 @@ for ts in tss:
     d = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(datetime.timezone(datetime.timedelta(hours=5,minutes=30))).date()
     days.setdefault(d, []).append(ts)
 
-LOTS = 3; LOT = 65; step = 50.0
-trades = []; skipped = []
-for d in days:
-    if d.weekday() != 1: continue
-    dbars = days[d]
-    if len(dbars) < 60: continue
-    e_ts = dbars[1]; x_ts = dbars[-1]
-    def g(off, ot, ts): return series[(off,ot)].get(ts)
-    sp_l = g('ATM-2','PUT',e_ts); sc_l = g('ATM+2','CALL',e_ts)
-    hp_l = g('ATM-4','PUT',e_ts); hc_l = g('ATM+4','CALL',e_ts)
-    if not (sp_l and sc_l and hp_l and hc_l): continue
-    spot0 = sc_l[2]
-    sp_k, sp_p = sp_l[0], sp_l[1]; sc_k, sc_p = sc_l[0], sc_l[1]
-    hp_k, hp_p = hp_l[0], hp_l[1]; hc_k, hc_p = hc_l[0], hc_l[1]
-    credit = sp_p + sc_p - hp_p - hc_p
-    entry_iv = sc_l[3] if sc_l[3] > 0 else 0.14
-    rv = realized_vol(d)
-    if rv > 0 and entry_iv <= rv:
-        skipped.append((str(d), entry_iv, rv)); continue   # IV-rank filter
-    legs = [(sp_k,'p',-1),(sc_k,'c',-1),(hp_k,'p',1),(hc_k,'c',1)]
-    outcome = 'expiry'; pnl_pts = None
-    last_ts = dbars[-1]
-    for ts in dbars[2:]:
-        spot_t, iv_t = series[('ATM+2','CALL')].get(ts, (None, None, None, None))[2], series[('ATM+2','CALL')].get(ts, (0,0,0,0.14))[3]
-        if spot_t is None: continue
-        if iv_t <= 0: iv_t = entry_iv
-        T_t = max(0.0, (last_ts - ts) / (365*24*3600))
-        val = sum(s * om.bs_price(spot_t, k, T_t, iv_t, f) for k, f, s in legs)
-        pnl = credit - val
-        if pnl >= 0.5 * credit:
-            outcome = 'tp'; pnl_pts = 0.5 * credit; break
-        if pnl <= -2.0 * credit:
-            outcome = 'sl'; pnl_pts = -2.0 * credit; break
-    if pnl_pts is None:
-        spot_exp = series[('ATM+2','CALL')].get(x_ts, (0,0,0,0))[2]
-        pnl_pts = (credit - max(0.0, sp_k-spot_exp) - max(0.0, spot_exp-sc_k)
-                   + max(0.0, hp_k-spot_exp) + max(0.0, spot_exp-hc_k))
-    trades.append({"date":str(d),"outcome":outcome,"iv0":round(entry_iv,3),"rv":round(rv,3),
-                   "credit":round(credit,2),"pnl":round(pnl_pts*LOT*LOTS,0)})
+LOTS = 3; LOT = 65
 
-print(f"=== NIFTY 3mo FINAL: 0DTE condor, {LOTS} lots, real premium, TP/SL, IV>RV filter ===")
-wins = [t for t in trades if t["pnl"]>0]
-tot = sum(t["pnl"] for t in trades)
-print(f"traded={len(trades)} skipped(IV<=RV)={len(skipped)} win={len(wins)/len(trades) if trades else 0:.3f} TOTAL=Rs{tot:,.0f}")
-outcomes = {}
-for t in trades: outcomes[t['outcome']] = outcomes.get(t['outcome'],0)+1
-print("outcomes:", outcomes, "| skipped days:", [s[0] for s in skipped])
-for t in trades:
-    print(f"  {t['date']} {t['outcome']:6s} iv={t['iv0']:.0%} rv={t['rv']:.0%} credit={t['credit']} pnl=Rs{t['pnl']:,.0f}")
+def run_backtest(tp):
+    trades = []; skipped = []
+    for d in days:
+        if d.weekday() != 1: continue
+        dbars = days[d]
+        if len(dbars) < 60: continue
+        e_ts = dbars[1]; x_ts = dbars[-1]
+        def g(off, ot, ts): return series[(off,ot)].get(ts)
+        sp_l = g('ATM-2','PUT',e_ts); sc_l = g('ATM+2','CALL',e_ts)
+        hp_l = g('ATM-4','PUT',e_ts); hc_l = g('ATM+4','CALL',e_ts)
+        if not (sp_l and sc_l and hp_l and hc_l): continue
+        sp_k, sp_p = sp_l[0], sp_l[1]; sc_k, sc_p = sc_l[0], sc_l[1]
+        hp_k, hp_p = hp_l[0], hp_l[1]; hc_k, hc_p = hc_l[0], hc_l[1]
+        credit = sp_p + sc_p - hp_p - hc_p
+        entry_iv = sc_l[3] if sc_l[3] > 0 else 0.14
+        rv = realized_vol(d)
+        if rv > 0 and entry_iv <= rv:
+            skipped.append((str(d), entry_iv, rv)); continue
+        legs = [(sp_k,'p',-1),(sc_k,'c',-1),(hp_k,'p',1),(hc_k,'c',1)]
+        outcome = 'expiry'; pnl_pts = None
+        last_ts = dbars[-1]
+        for ts in dbars[2:]:
+            entry = series[('ATM+2','CALL')].get(ts)
+            if entry is None: continue
+            spot_t, iv_t = entry[2], entry[3]
+            if iv_t <= 0: iv_t = entry_iv
+            T_t = max(0.0, (last_ts - ts) / (365*24*3600))
+            val = sum(s * om.bs_price(spot_t, k, T_t, iv_t, f) for k, f, s in legs)
+            pnl = credit - val
+            if pnl >= tp * credit:
+                outcome = 'tp'; pnl_pts = tp * credit; break
+            if pnl <= -2.0 * credit:
+                outcome = 'sl'; pnl_pts = -2.0 * credit; break
+        if pnl_pts is None:
+            spot_exp = series[('ATM+2','CALL')].get(x_ts, (0,0,0,0))[2]
+            pnl_pts = (credit - max(0.0, sp_k-spot_exp) - max(0.0, spot_exp-sc_k)
+                       + max(0.0, hp_k-spot_exp) + max(0.0, spot_exp-hc_k))
+        trades.append({"date":str(d),"outcome":outcome,"iv0":round(entry_iv,3),"rv":round(rv,3),
+                       "credit":round(credit,2),"pnl":round(pnl_pts*LOT*LOTS,0)})
+    return trades, skipped
+
+for tp in (0.5, 0.75):
+    trades, skipped = run_backtest(tp)
+    wins = [t for t in trades if t["pnl"]>0]
+    tot = sum(t["pnl"] for t in trades)
+    outcomes = {}
+    for t in trades: outcomes[t['outcome']] = outcomes.get(t['outcome'],0)+1
+    print(f"=== TP@{tp:.0%} | traded={len(trades)} skipped={len(skipped)} win={len(wins)/len(trades) if trades else 0:.3f} TOTAL=Rs{tot:,.0f} outcomes={outcomes} ===")
+    for t in trades:
+        print(f"  {t['date']} {t['outcome']:6s} iv={t['iv0']:.0%} rv={t['rv']:.0%} credit={t['credit']} pnl=Rs{t['pnl']:,.0f}")
+    print()
