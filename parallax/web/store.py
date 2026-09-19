@@ -25,6 +25,32 @@ class JournalStore:
     def _connect(self):
         return sqlite3.connect(self.path)
 
+    def _init_settings(self):
+        with self._connect() as c:
+            c.execute("""CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY, value TEXT)""")
+            c.execute("INSERT OR IGNORE INTO settings (key,value) VALUES ('mode','paper')")
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        with self._connect() as c:
+            r = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return r[0] if r else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._connect() as c:
+            c.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, value))
+
+    def mode(self) -> str:
+        return self.get_setting("mode", "paper")
+
+    def mode_is_live(self) -> bool:
+        return self.mode() == "live"
+
+    def set_mode(self, mode: str) -> str:
+        m = "live" if str(mode).lower().startswith("live") else "paper"
+        self.set_setting("mode", m)
+        return m
+
     def _init(self):
         with self._connect() as c:
             c.execute("""CREATE TABLE IF NOT EXISTS trades (
@@ -36,6 +62,7 @@ class JournalStore:
             c.execute("""CREATE TABLE IF NOT EXISTS positions (
                 instrument TEXT PRIMARY KEY, strategy TEXT, side TEXT, qty REAL,
                 entry REAL, stop REAL, target REAL, updated TEXT)""")
+        self._init_settings()
 
     # ---- writes (called by the live workers) ----------------------------
     def record_trade(self, strategy, instrument, side, qty, entry, exit_price,

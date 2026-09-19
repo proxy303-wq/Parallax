@@ -88,12 +88,29 @@ class TelegramBot:
     def send(self, text: str) -> bool:
         return self.send_to(self.chat_id, text) if self.chat_id else False
 
-    def send_to(self, chat_id: str, text: str) -> bool:
-        """Send a message to a specific chat (for replies to user messages)."""
+    def send_to(self, chat_id: str, text: str, reply_markup: dict | None = None) -> bool:
+        """Send a message to a chat, optionally with an inline keyboard."""
         if not self.token or not chat_id:
             return False
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        payload = json.dumps({"chat_id": chat_id, "text": text}).encode()
+        body = {"chat_id": chat_id, "text": text}
+        if reply_markup:
+            body["reply_markup"] = reply_markup
+        payload = json.dumps(body).encode()
+        req = urllib.request.Request(url, data=payload,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    def answer_callback(self, callback_id: str, text: str = "") -> bool:
+        """Acknowledge an inline-button press (stops the client spinner)."""
+        if not self.token or not callback_id:
+            return False
+        url = f"https://api.telegram.org/bot{self.token}/answerCallbackQuery"
+        payload = json.dumps({"callback_query_id": callback_id, "text": text[:190]}).encode()
         req = urllib.request.Request(url, data=payload,
                                      headers={"Content-Type": "application/json"})
         try:
