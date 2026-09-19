@@ -48,6 +48,8 @@ class LiveRunner:
         self.bars: list = []
         self.active: dict | None = None
         self.last_bar_ts = None
+        self.options_trader = None
+        self.entered_on = None
         self.gates = {"skipped_stale": 0, "skipped_crossed": 0, "trades": 0}
 
     # ---- mode / broker ---------------------------------------------------
@@ -169,9 +171,39 @@ class LiveRunner:
                   f"stop {sig.stop:.0f} tgt {sig.target:.0f} [{ack.status.value}]")
 
     def _options_tick(self, bar) -> None:
-        # 0DTE condor entry/management lives in dhan_options_live; the runner
-        # only gates whether it may act today (session scheduler).
-        return
+        """0DTE condor: enter once near the open, manage intraday, exit at
+        TP / SL / session close.  Same gates and mode as the futures path."""
+        from parallax.apps.worker.dhan_options_live import ZeroDteCondor
+        if self.options_trader is None:
+            self.options_trader = ZeroDteCondor(broker=self._broker(),
+                                                lots=self.lots_options)
+        ot = self.options_trader
+        ot.broker.dry_run = (self.store.mode() != "live")
+        now = datetime.now(IST)
+        today = now.date()
+
+        # -------- entry: one shot inside the open window --------
+        if ot.active is None and self.entered_on != today:
+            if now.hour == 9 and 20 <= now.minute <= 40:
+                plan = ot.select()
+                if plan.get("legs"):
+                    ot.enter(plan)
+                    self.entered_on = today
+                    self.gates["trades"] += 1
+                else:
+                    self._say("[0DTE] no trade: " + str(plan.get("reason")))
+                    self.entered_on = today
+            return
+
+        # -------- management: TP / SL / end of day --------
+        if ot.active is not None:
+            action = ot.manage()
+            if action in ("tp", "sl"):
+                ot.close(action)
+                self.gates["trades"] += 1
+            elif now.hour == 15 and now.minute >= 15:
+                ot.close("eod")
+                self.gates["trades"] += 1
 
     def _say(self, msg: str) -> None:
         print(msg)
