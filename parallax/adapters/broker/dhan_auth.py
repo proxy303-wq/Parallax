@@ -163,6 +163,24 @@ def refresh_token(client_id: str, pin: str = "", totp_secret: str = "",
     return None, "refresh failed (no usable token)"
 
 
+def daily_refresh(client_id: str, pin: str = "", totp_secret: str = "",
+                  notify=print) -> tuple:
+    """Explicit daily refresh, meant to run at 08:00 before the session.
+
+    Tries RenewToken first - it extends an ACTIVE token by 24h and keeps the
+    token type (SELF stays SELF, which market data needs).  Falls back to the
+    normal chain (saved -> TOTP).  Returns (token, source)."""
+    from parallax.adapters.env import env as _env
+    tok = _env("DHAN_ACCESS_TOKEN") or load_saved_token() or ""
+    if tok and not token_is_expired(tok, margin_s=0):
+        renewed = renew_token(client_id, tok)
+        if renewed and not token_is_expired(renewed, margin_s=0):
+            save_token(renewed)
+            notify("token renewed via RenewToken (+24h)")
+            return renewed, "RenewToken +24h"
+    return refresh_token(client_id, pin, totp_secret, min_hours=0.0, notify=notify)
+
+
 def load_saved_token(path: str = DEFAULT_TOKEN_FILE) -> str | None:
     try:
         if os.path.exists(path):

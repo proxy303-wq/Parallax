@@ -55,6 +55,7 @@ class LiveRunner:
         self._broker_cache = None
         self._broker_mode = None
         self._last_token_check = 0.0
+        self.refreshed_on = None
         self.gates = {"skipped_stale": 0, "skipped_crossed": 0, "trades": 0}
 
     # ---- mode / broker ---------------------------------------------------
@@ -66,6 +67,32 @@ class LiveRunner:
             self._broker_cache = DhanBroker(dry_run=not live)
             self._broker_mode = live
         return self._broker_cache
+
+    def _snapshot_capital(self) -> float:
+        """PAPER -> the fixed paper capital (Rs8L by default); LIVE -> the real
+        Dhan wallet balance.  Written to the store so the dashboard agrees."""
+        mode = self.store.mode()
+        if mode != "live":
+            cap = self.store.paper_capital()
+            self.store.snapshot_capital(cap, cap, 0.0)
+            return cap
+        try:
+            acct = self._broker().get_account()
+            self.store.snapshot_capital(acct.equity, acct.cash, acct.margin_used)
+            return acct.equity
+        except Exception:
+            return 0.0
+
+    def _daily_refresh(self, now) -> str:
+        """08:00 token refresh (daily_refresh: RenewToken -> TOTP)."""
+        from parallax.adapters.broker.dhan_auth import daily_refresh, token_status
+        from parallax.adapters.env import env
+        tok, src = daily_refresh(env("DHAN_CLIENT_ID"), env("DHAN_PIN"),
+                                 env("DHAN_TOTP_SECRET"))
+        self._broker_cache = None
+        st = token_status()
+        return (f"[TOKEN] 08:00 refresh: {src} -> {st.get('type') or '?'} "
+                f"{st.get('hours_left')}h")
 
     def _ensure_token(self, force: bool = False) -> dict:
         """Proactively refresh the Dhan token before it lapses.
@@ -143,15 +170,8 @@ class LiveRunner:
             engine = "NONE"
             detail = "-"
             note = "No engine scheduled."
-        cap = self.store.capital()
-        equity = cap.get("equity", 0) or 0
-        if not equity:
-            try:
-                acct = self._broker().get_account()
-                equity = acct.equity
-                self.store.snapshot_capital(acct.equity, acct.cash, acct.margin_used)
-            except Exception:
-                equity = 0
+        equity = self._snapshot_capital()
+        cap_src = "Dhan wallet" if self.store.mode_is_live() else "paper capital"
         try:
             st = self._ensure_token()
             tk = "Token " + str(st.get("type") or "?") + " " + str(st.get("hours_left")) + "h"
@@ -160,7 +180,7 @@ class LiveRunner:
         return ("PARALLAX armed [" + mode + "]" + chr(10)
                 + today.strftime("%a %d %b") + " - " + engine + chr(10)
                 + detail + chr(10) + note + chr(10)
-                + f"Equity Rs{equity:,.0f}" + chr(10) + tk)
+                + f"Equity Rs{equity:,.0f} (" + cap_src + ")" + chr(10) + tk)
 
     def _eod_message(self, now) -> str:
         s = self.store.summary()
@@ -188,6 +208,13 @@ class LiveRunner:
             try:
                 now = datetime.now(IST)
                 today = now.date()
+                # 08:00 daily token refresh (before the session)
+                if now.hour == 8 and self.refreshed_on != today:
+                    self.refreshed_on = today
+                    try:
+                        self._say(self._daily_refresh(now))
+                    except Exception as e:
+                        self._say("[TOKEN] 08:00 refresh error: " + str(e)[:90])
                 # periodic token health: refresh well before expiry, any hour
                 if time.time() - self._last_token_check > 1200:
                     self._last_token_check = time.time()

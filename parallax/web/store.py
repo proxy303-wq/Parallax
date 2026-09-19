@@ -30,6 +30,7 @@ class JournalStore:
             c.execute("""CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY, value TEXT)""")
             c.execute("INSERT OR IGNORE INTO settings (key,value) VALUES ('mode','paper')")
+            c.execute("INSERT OR IGNORE INTO settings (key,value) VALUES ('paper_capital','800000')")
 
     def get_setting(self, key: str, default: str = "") -> str:
         with self._connect() as c:
@@ -45,6 +46,24 @@ class JournalStore:
 
     def mode_is_live(self) -> bool:
         return self.mode() == "live"
+
+    def paper_capital(self) -> float:
+        """Fixed capital used in PAPER mode (default Rs8,00,000)."""
+        try:
+            return float(self.get_setting("paper_capital", "800000") or 800000)
+        except (TypeError, ValueError):
+            return 800000.0
+
+    def set_paper_capital(self, value: float) -> float:
+        v = float(value)
+        self.set_setting("paper_capital", str(v))
+        return v
+
+    def effective_capital(self, dhan_equity: float = 0.0) -> float:
+        """PAPER -> the fixed paper capital; LIVE -> the real Dhan balance."""
+        if self.mode_is_live():
+            return float(dhan_equity or 0.0)
+        return self.paper_capital()
 
     def set_mode(self, mode: str) -> str:
         m = "live" if str(mode).lower().startswith("live") else "paper"
