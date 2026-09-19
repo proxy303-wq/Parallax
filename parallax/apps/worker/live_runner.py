@@ -112,13 +112,20 @@ class LiveRunner:
         return token_status()
 
     # ---- data ------------------------------------------------------------
-    def _fetch_bars(self, day=None):
-        """Completed 5-min NIFTY bars for the given day from Dhan charts."""
+    def _fetch_bars(self, days_back: int = 8):
+        """Completed 5-min NIFTY bars over the last few trading days.
+
+        Pulls a multi-day range (Dhan returns the recent sessions) so the
+        indicators - SMA20/SMA50, ATR(14) and the swing/liquidity structure -
+        are fully warmed from the FIRST bar of the session.  Without this the
+        morning would cold-start on 1-2 bars and produce garbage signals."""
         b = self._broker()
         api = b._api_client()
-        d = (day or datetime.now(IST)).strftime("%Y-%m-%d")
+        now = datetime.now(IST)
+        frm = (now.date() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        to = now.strftime("%Y-%m-%d")
         res = api.intraday_minute_data(NIFTY_SCrip, "IDX_I", "INDEX",
-                                       d + " 09:15:00", d + " 15:30:00", "5")
+                                       frm + " 09:15:00", to + " 15:30:00", "5")
         data = (res or {}).get("data") or {}
         opens = data.get("open") or []
         highs = data.get("high") or []
@@ -230,13 +237,18 @@ class LiveRunner:
                         self._say(self._eod_message(now))
                         self.eod_on = today
                 if today.weekday() < 5 and now.hour >= 9 and now.hour < 16:
-                    bars = self._fetch_bars(now)
+                    bars = self._fetch_bars()
                     if bars:
                         newest = bars[-1]
                         if newest.ts != self.last_bar_ts:
                             self.last_bar_ts = newest.ts
                             if self._fresh(newest):
                                 self.bars = bars[-800:]
+                                if len(self.bars) < 60:
+                                    self._say("[WARMUP] only " + str(len(self.bars))
+                                              + " bars - indicators not warm, skipping")
+                                    self.last_bar_ts = newest.ts
+                                    continue
                                 if futures_active(today):
                                     self._futures_tick(newest)
                                 elif options_active(today):
