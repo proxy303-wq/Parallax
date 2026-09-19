@@ -21,7 +21,7 @@ def sma(values, period: int) -> np.ndarray:
 
 def ema(values, period: int) -> np.ndarray:
     s = pd.Series(values).ewm(span=period, adjust=False).mean()
-    out = s.to_numpy()
+    out = np.array(s.to_numpy(), dtype=float, copy=True)
     if len(out) >= period:
         out[:period - 1] = np.nan
     return out
@@ -36,9 +36,9 @@ def rsi(close, period: int = 14) -> np.ndarray:
     avg_loss = loss.ewm(alpha=1.0 / period, adjust=False).mean()
     rs = avg_gain / avg_loss
     out = 100.0 - 100.0 / (1.0 + rs)
-    out = out.where(avg_loss != 0, 100.0)
+    out = out.where(avg_loss != 0, 100.0).copy()
     out.iloc[:period] = np.nan
-    return out.to_numpy()
+    return np.array(out.to_numpy(), dtype=float, copy=True)
 
 
 def true_range(high, low, close) -> np.ndarray:
@@ -48,7 +48,7 @@ def true_range(high, low, close) -> np.ndarray:
     prev_close = c.shift(1)
     tr = pd.concat([h - l, (h - prev_close).abs(), (l - prev_close).abs()],
                    axis=1).max(axis=1)
-    out = tr.to_numpy()
+    out = np.array(tr.to_numpy(), dtype=float, copy=True)
     if len(out):
         out[0] = float(h.iloc[0] - l.iloc[0])
     return out
@@ -56,7 +56,7 @@ def true_range(high, low, close) -> np.ndarray:
 
 def _wilder_smooth(x: np.ndarray, period: int) -> np.ndarray:
     s = pd.Series(x).ewm(alpha=1.0 / period, adjust=False).mean()
-    out = s.to_numpy()
+    out = np.array(s.to_numpy(), dtype=float, copy=True)
     if len(out) >= period:
         out[:period - 1] = np.nan
     return out
@@ -80,11 +80,15 @@ def adx(high, low, close, period: int = 14):
     plus_di = 100.0 * plus_dm.ewm(alpha=1.0 / period, adjust=False).mean() / atr_s
     minus_di = 100.0 * minus_dm.ewm(alpha=1.0 / period, adjust=False).mean() / atr_s
     dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di)
-    adx_ = dx.ewm(alpha=1.0 / period, adjust=False).mean()
+    adx_ = dx.ewm(alpha=1.0 / period, adjust=False).mean().copy()
+    plus_di = plus_di.copy()
+    minus_di = minus_di.copy()
     for s in (plus_di, minus_di):
         s.iloc[:period] = np.nan
     adx_.iloc[:period * 2 - 1] = np.nan
-    return adx_.to_numpy(), plus_di.to_numpy(), minus_di.to_numpy()
+    return (np.array(adx_.to_numpy(), dtype=float, copy=True),
+            np.array(plus_di.to_numpy(), dtype=float, copy=True),
+            np.array(minus_di.to_numpy(), dtype=float, copy=True))
 
 
 def rolling_high(high, period: int) -> np.ndarray:
