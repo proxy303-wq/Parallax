@@ -34,7 +34,7 @@ def _realized_vol(closes):
 
 
 class ZeroDteCondorPaper:
-    def __init__(self, broker=None, lots=3, tp=0.5, sl=2.0, step=50.0,
+    def __init__(self, broker=None, lots=4, tp=0.5, sl=2.0, step=50.0,
                  dry_run=True):
         self.broker = broker or DhanBroker(dry_run=dry_run)
         self.lots = lots
