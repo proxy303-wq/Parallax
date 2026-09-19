@@ -86,10 +86,14 @@ class TelegramBot:
 
     # ---- transport -------------------------------------------------------
     def send(self, text: str) -> bool:
-        if not (self.token and self.chat_id):
+        return self.send_to(self.chat_id, text) if self.chat_id else False
+
+    def send_to(self, chat_id: str, text: str) -> bool:
+        """Send a message to a specific chat (for replies to user messages)."""
+        if not self.token or not chat_id:
             return False
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        payload = json.dumps({"chat_id": self.chat_id, "text": text}).encode()
+        payload = json.dumps({"chat_id": chat_id, "text": text}).encode()
         req = urllib.request.Request(url, data=payload,
                                      headers={"Content-Type": "application/json"})
         try:
@@ -97,3 +101,17 @@ class TelegramBot:
                 return resp.status == 200
         except Exception:
             return False
+
+    def get_updates(self, offset: int | None = None, timeout: int = 30) -> list:
+        """Long-poll new messages.  Returns the 'result' list (empty on error)."""
+        if not self.token:
+            return []
+        url = f"https://api.telegram.org/bot{self.token}/getUpdates?timeout={timeout}"
+        if offset:
+            url += f"&offset={offset}"
+        try:
+            with urllib.request.urlopen(url, timeout=timeout + 15) as resp:
+                data = json.loads(resp.read().decode())
+            return data.get("result") or []
+        except Exception:
+            return []
