@@ -37,7 +37,8 @@ def _page(title, active, body):
     nav = "".join(
         f'<a href="{h}" class="{"active" if a == active else ""}">{t}</a>'
         for t, h, a in (("Home", "/", "home"), ("Futures", "/futures", "futures"),
-                        ("Options", "/options", "options")))
+                        ("Options", "/options", "options"),
+                        ("Crypto", "/crypto", "crypto")))
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title} · PARALLAX</title><style>{CSS}</style></head>
@@ -118,6 +119,30 @@ def options():
             f"</div></div>"
             + "<div class='card'><h3>Journal</h3>" + _trade_rows(trades) + "</div>")
     return _page("Options", "options", body)
+
+
+@app.get("/crypto", response_class=HTMLResponse)
+def crypto():
+    trades = store.trades(strategy="crypto", limit=100)
+    cards = ""
+    try:
+        from parallax.adapters.broker.delta import DeltaBroker
+        d = DeltaBroker(dry_run=True)
+        for sym, label in (("BTC", "BTC/USD"), ("XAUT", "XAUT/USD")):
+            q = d.get_quote(f"DELTA:{sym}")
+            cards += (f'<div class="stat"><div class="k">{label}</div>'
+                      f'<div class="v">{q.last:,.0f}</div>'
+                      f'<div class="k">bid {q.bid:,.0f} / ask {q.ask:,.0f}</div></div>')
+    except Exception:
+        cards = ('<div class="stat"><div class="k">BTC/USD</div>'
+                 '<div class="v">-</div></div>'
+                 '<div class="stat"><div class="k">XAUT/USD</div>'
+                 '<div class="v">-</div></div>')
+    body = (f'<div class="card"><h3>Crypto (Delta) · paper</h3>'
+            f'<div class="grid">{cards}</div>'
+            f'<p style="color:#8b949e">Strategy engine coming later - page reserved for BTC + XAUTUSD.</p></div>'
+            + '<div class="card"><h3>Journal</h3>' + _trade_rows(trades) + '</div>')
+    return _page("Crypto", "crypto", body)
 
 
 @app.get("/api/state")
