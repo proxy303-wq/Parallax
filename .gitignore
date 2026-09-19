@@ -5,3 +5,7 @@ __pycache__/
 .pytest_cache/
 reports/
 .dhan_token.txt
+parallax.db
+*.db-journal
+_*.py
+_*.sh
