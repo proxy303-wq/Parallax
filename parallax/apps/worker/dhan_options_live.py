@@ -45,6 +45,7 @@ class ZeroDteCondor:
         self.active: dict | None = None
         self.last_value: float | None = None
         self.last_pnl: float = 0.0
+        self.feed = None
         from parallax.web.store import JournalStore
         self.journal = JournalStore()
 
@@ -109,6 +110,7 @@ class ZeroDteCondor:
         self.active = {"plan": plan, "entry_time": datetime.now(timezone.utc)}
         self.last_value = plan["credit"]
         self.last_pnl = 0.0
+        self._start_feed(plan)
         self.journal.set_position("NIFTY 0DTE", "options", "SELL", self.lots,
                                   plan["credit"], 0.0, 0.0)
         self._say(f"[0DTE] ENTER {self.lots}L condor ATM{plan['atm']:.0f} "
@@ -116,12 +118,49 @@ class ZeroDteCondor:
                   f"[{self.broker.dry_run and 'PAPER' or 'LIVE'}]")
         return acks
 
+    # ---- live feed --------------------------------------------------------
+    def _start_feed(self, plan: dict) -> None:
+        """Subscribe the 4 legs on the Dhan WebSocket for real-time premiums."""
+        try:
+            from parallax.adapters.market_data.dhan_feed import DhanMarketFeed
+            from parallax.adapters.broker.dhan_auth import resolve_token
+            from parallax.adapters.env import env
+            cid = env("DHAN_CLIENT_ID")
+            tok, _ = resolve_token(cid, env("DHAN_ACCESS_TOKEN"),
+                                   env("DHAN_PIN"), env("DHAN_TOTP_SECRET"))
+            insts = [("NSE_FNO", str(l["security_id"])) for l in plan["legs"].values()]
+            self.feed = DhanMarketFeed(tok, cid, insts)
+            self.feed.start()
+        except Exception as e:
+            self.feed = None
+            self._say("[0DTE] WS feed unavailable: " + str(e)[:70])
+
+    def _stop_feed(self) -> None:
+        if self.feed is not None:
+            try:
+                self.feed.stop()
+            except Exception:
+                pass
+            self.feed = None
+
     # ---- management -------------------------------------------------------
     def value_now(self) -> float | None:
-        """Current condor value in points (cost to close)."""
+        """Current condor value in points (cost to close).
+
+        Prefers the live WebSocket prices (real-time, no rate limit) and falls
+        back to the REST option chain if the feed has no tick yet."""
         if not self.active:
             return None
         plan = self.active["plan"]
+        if self.feed is not None:
+            ltp = {n: self.feed.ltp(plan["legs"][n]["security_id"])
+                   for n in ("put_short", "call_short", "put_hedge", "call_hedge")}
+            if all(v is not None for v in ltp.values()):
+                val = (-(ltp["put_short"] + ltp["call_short"])
+                       + ltp["put_hedge"] + ltp["call_hedge"])
+                self.last_value = round(val, 2)
+                self.last_pnl = round((plan["credit"] - val) * LOT * self.lots, 2)
+                return self.last_value
         chain = fetch_option_chain("NIFTY")
         if not chain:
             return None
@@ -170,6 +209,7 @@ class ZeroDteCondor:
                                   round(pnl, 2), "WIN" if pnl > 0 else "LOSS",
                                   f"condor {reason}")
         self.journal.clear_positions()
+        self._stop_feed()
         self._say(f"[0DTE] CLOSE {reason} pnl Rs{pnl:,.0f}")
         self.active = None
         return {"reason": reason, "pnl": round(pnl, 2)}
