@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: parallax-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: parallax-dashboard}
+  template:
+    metadata:
+      labels: {app: parallax-dashboard}
+    spec:
+      containers:
+      - name: dashboard
+        image: ghcr.io/proxy303-wq/parallax:latest
+        ports: [{containerPort: 8000}]
+        env:
+        - name: PARALLAX_DB
+          value: /data/parallax.db
+        - name: DHAN_CLIENT_ID
+          valueFrom: {secretKeyRef: {name: parallax-secrets, key: dhan-client-id}}
+        - name: DHAN_ACCESS_TOKEN
+          valueFrom: {secretKeyRef: {name: parallax-secrets, key: dhan-access-token}}
+        - name: TYPESAFE_API_KEY
+          valueFrom: {secretKeyRef: {name: parallax-secrets, key: typesafe-api-key}}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+      volumes:
+      - name: data
+        persistentVolumeClaim: {claimName: parallax-data}

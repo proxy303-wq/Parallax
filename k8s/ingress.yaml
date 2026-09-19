@@ -1,0 +1,16 @@
+# Ingress — replace the host with your domain / Mumbai static IP.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: parallax
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  rules:
+  - host: parallax.example.com   # <- set your domain / Mumbai static IP
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service: {name: parallax-dashboard, port: {number: 80}}

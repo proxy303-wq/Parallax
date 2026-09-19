@@ -1,0 +1,17 @@
+name: deploy
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build image
+      run: docker build -t ghcr.io/proxy303-wq/parallax:${{ github.sha }} .
+    - name: Configure kubectl
+      uses: azure/setup-kubectl@v3
+    - name: Deploy to Mumbai cluster
+      env:
+        KUBECONFIG: ${{ secrets.KUBECONFIG }}
+      run: kubectl apply -f k8s/

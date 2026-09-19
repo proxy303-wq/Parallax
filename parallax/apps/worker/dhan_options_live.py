@@ -43,6 +43,8 @@ class ZeroDteCondorPaper:
         self.step = step
         self.telegram = TelegramBot()
         self.active: dict | None = None
+        from parallax.web.store import JournalStore
+        self.journal = JournalStore()
 
     # ---- entry selection -------------------------------------------------
     def select(self, symbol="NIFTY", expiry=None, force=False) -> dict | None:
@@ -156,6 +158,9 @@ class ZeroDteCondorPaper:
                                security_id=l["security_id"], trading_symbol="")
             self.broker.place_option_order(c, side[name], self.lots, "MARKET")
         pnl = plan["credit"] * 65 * self.lots  # placeholder; real P&L from fills
+        self.journal.record_trade(
+            "options", "NIFTY 0DTE", "SELL", self.lots, 0.0, 0.0,
+            round(pnl, 2), "WIN" if pnl > 0 else "LOSS", f"condor {reason}")
         self._say(f"[NIFTY 0DTE] CLOSE ({reason})")
         self.active = None
         return {"reason": reason}

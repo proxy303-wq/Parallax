@@ -48,6 +48,8 @@ class DhanFuturesLive:
         self.paper = PaperBroker(capital=self.live_capital(), point_value=65.0,
                                  currency="INR", slippage=0.000002, fee_rate=0.0001)
         self.trades = 0
+        from parallax.web.store import JournalStore
+        self.journal = JournalStore()
 
     def live_capital(self) -> float:
         if self.capital_override:
@@ -91,6 +93,11 @@ class DhanFuturesLive:
                        f"Rs{(pnl or 0):,.0f}")
                 self._say(msg)
                 self.trades += 1
+                self.journal.record_trade(
+                    "futures", str(self.instrument), self.active["side"].value,
+                    self.active["qty"], self.active["entry"], exit_price,
+                    round(pnl or 0.0, 2), outcome, "ICT")
+                self.journal.snapshot_capital(self.live_capital(), self.live_capital(), 0.0)
                 self.active = None
                 return {"event": "exit", "pnl": round(pnl or 0, 2), "outcome": outcome}
 
