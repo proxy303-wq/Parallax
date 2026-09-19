@@ -119,7 +119,8 @@ def generate_access_token(client_id: str, pin: str, totp_code: str) -> str | Non
 
 def token_status(token: str | None = None) -> dict:
     """Report the access token's type and remaining life (health check)."""
-    tok = token or os.environ.get("DHAN_ACCESS_TOKEN") or load_saved_token() or ""
+    from parallax.adapters.env import env as _env
+    tok = token or _env("DHAN_ACCESS_TOKEN") or load_saved_token() or ""
     exp = token_expiry(tok)
     hours = round((exp - time.time()) / 3600, 2) if exp else -1.0
     ttype = ""
@@ -141,7 +142,8 @@ def refresh_token(client_id: str, pin: str = "", totp_secret: str = "",
     (fresh APP token - trading APIs work, market data may not).  Every TOTP
     generation invalidates the previous token, so only call this when needed.
     Returns (token, source)."""
-    tok = os.environ.get("DHAN_ACCESS_TOKEN") or load_saved_token() or ""
+    from parallax.adapters.env import env as _env
+    tok = _env("DHAN_ACCESS_TOKEN") or load_saved_token() or ""
     if tok and not token_is_expired(tok, margin_s=int(min_hours * 3600)):
         return tok, "still valid"
     if tok:
