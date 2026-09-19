@@ -34,7 +34,7 @@ def _realized_vol(closes):
 
 
 class ZeroDteCondorPaper:
-    def __init__(self, broker=None, lots=4, tp=0.5, sl=2.0, step=50.0,
+    def __init__(self, broker=None, lots=8, tp=0.5, sl=2.0, step=50.0,
                  dry_run=True):
         self.broker = broker or DhanBroker(dry_run=dry_run)
         self.lots = lots
@@ -48,6 +48,9 @@ class ZeroDteCondorPaper:
     def select(self, symbol="NIFTY", expiry=None, force=False) -> dict | None:
         """Fetch the live chain and pick the ATM-2/+2 wings + ATM-4/+4 hedges.
         Returns {strikes, credit, iv, realized, legs, reason} or None."""
+        from parallax.config.schedule import options_active
+        if not options_active(datetime.now(timezone.utc)):
+            return {"reason": "not a 0DTE expiry day"}
         chain = fetch_option_chain(symbol, expiry=expiry)
         if not chain:
             return {"reason": "chain unavailable"}

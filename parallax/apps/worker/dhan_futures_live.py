@@ -58,6 +58,9 @@ class DhanFuturesLive:
         return 750_000.0   # preview capital until the wallet is funded
 
     def on_bar(self, bar) -> dict | None:
+        from parallax.config.schedule import futures_active
+        if not futures_active(bar.ts):
+            return None   # 0DTE expiry day -> futures engine silent (no clash)
         self.bars.append(bar)
         if len(self.bars) > self.lookback + 200:
             self.bars = self.bars[-(self.lookback + 200):]

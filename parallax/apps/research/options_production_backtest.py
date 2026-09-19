@@ -70,7 +70,7 @@ for ts in tss:
     d = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(datetime.timezone(datetime.timedelta(hours=5,minutes=30))).date()
     days.setdefault(d, []).append(ts)
 
-LOTS = 3; LOT = 65
+LOTS = 8; LOT = 65
 
 def run_backtest(tp):
     trades = []; skipped = []
