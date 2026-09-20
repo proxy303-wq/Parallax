@@ -1,10 +1,13 @@
-"""0DTE NIFTY iron condor - live trader (TP@50%, SL@2x, IV-rank filter).
+"""0DTE NIFTY iron condor - live trader (ratchet TP, SL@2x, IV-rank filter).
 
 Intraday (INTRADAY) options selling on the NIFTY weekly (Tuesday) expiry:
 at the open, sell ATM-2 put + ATM+2 call and buy ATM-4 put + ATM+4 call.
 Credit uses the REAL bid (shorts) / ask (hedges) from the live option chain.
 Skips unless entry IV > realised vol (trailing daily closes from Dhan).
-Manages intraday: TP at 50% credit, SL at 2x credit, else exit at the close.
+Manages intraday with a RATCHET take-profit: once the position has been up 50%
+the floor locks at 50% of credit, at 80% it locks 75%, at 95% it locks 90%.
+A fixed take-profit (tp_mode="fixed") is still supported.
+Stop is SL x credit; anything still open exits at the session close.
 Mode (paper/live) is read from the journal store.
 """
 from __future__ import annotations
@@ -35,12 +38,14 @@ def _realized_vol(closes):
 
 class ZeroDteCondor:
     def __init__(self, broker=None, lots=8, tp=0.5, sl=2.0, step=50.0,
-                 dry_run=True):
+                 dry_run=True, tp_mode="ratchet"):
         self.broker = broker or DhanBroker(dry_run=dry_run)
         self.lots = lots
         self.tp = tp
         self.sl = sl
         self.step = step
+        self.tp_mode = tp_mode          # "ratchet" | "fixed"
+        self.peak_pct = 0.0             # best profit (% of credit) seen this trade
         self.telegram = TelegramBot()
         self.active: dict | None = None
         self.last_value: float | None = None
@@ -110,6 +115,7 @@ class ZeroDteCondor:
         self.active = {"plan": plan, "entry_time": datetime.now(timezone.utc)}
         self.last_value = plan["credit"]
         self.last_pnl = 0.0
+        self.peak_pct = 0.0
         self._start_feed(plan)
         self.journal.set_position("NIFTY 0DTE", "options", "SELL", self.lots,
                                   plan["credit"], 0.0, 0.0)
@@ -178,15 +184,33 @@ class ZeroDteCondor:
         self.last_pnl = round((plan["credit"] - val) * LOT * self.lots, 2)
         return self.last_value
 
+    @staticmethod
+    def ratchet_floor(peak: float) -> float:
+        """Locked-in profit floor (% of credit) given the best profit seen."""
+        if peak >= 0.95:
+            return 0.90
+        if peak >= 0.80:
+            return 0.75
+        if peak >= 0.50:
+            return 0.50
+        return 0.0
+
     def manage(self) -> str:
         val = self.value_now()
         if val is None or not self.active:
             return "hold"
         credit = self.active["plan"]["credit"]
-        if (credit - val) >= self.tp * credit:
-            return "tp"
-        if (credit - val) <= -self.sl * credit:
+        prof = (credit - val) / credit if credit else 0.0
+        self.peak_pct = max(self.peak_pct, prof)
+        if prof <= -self.sl:
             return "sl"
+        if self.tp_mode == "ratchet":
+            floor = self.ratchet_floor(self.peak_pct)
+            if floor > 0 and prof <= floor:
+                return "ratchet"
+            return "hold"
+        if prof >= self.tp:
+            return "tp"
         return "hold"
 
     def close(self, reason: str) -> dict:
@@ -202,6 +226,8 @@ class ZeroDteCondor:
         pnl = self.last_pnl if self.last_pnl else plan["credit"] * LOT * self.lots
         if reason == "tp":
             pnl = self.tp * plan["credit"] * LOT * self.lots
+        elif reason == "ratchet":
+            pnl = self.ratchet_floor(self.peak_pct) * plan["credit"] * LOT * self.lots
         elif reason == "sl":
             pnl = -self.sl * plan["credit"] * LOT * self.lots
         self.journal.record_trade("options", "NIFTY 0DTE", "SELL", self.lots,
