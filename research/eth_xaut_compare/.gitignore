@@ -1,0 +1,5 @@
+# Market data is re-fetchable with the scripts in src/ (see REPORT_ETH_XAUT.md).
+# Not committed: several MB of third-party venue candles.
+data/
+*.parquet
+__pycache__/
