@@ -216,8 +216,8 @@ class LiveRunner:
             try:
                 now = datetime.now(IST)
                 today = now.date()
-                # daily token refresh at 10:00 IST (one per day)
-                if now.hour == 10 and self.refreshed_on != today:
+                # daily token refresh at 08:00 IST (one per day, pre-session)
+                if now.hour == 8 and self.refreshed_on != today:
                     self.refreshed_on = today
                     try:
                         self._say(self._daily_refresh(now))
