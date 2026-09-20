@@ -31,6 +31,7 @@ th{color:#8b949e;font-weight:500}.tag{padding:2px 8px;border-radius:10px;font-si
 .cry{background:#d2992222;color:#d29922}
 .mode{padding:4px 12px;border-radius:12px;font-size:12px;font-weight:700;letter-spacing:1px}
 .mode.paper{background:#d2992222;color:#d29922}
+.mode.demo{background:#1f6feb22;color:#58a6ff}
 .mode.live{background:#f8514922;color:#f85149}
 .btn{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px}
 .btn:hover{border-color:#58a6ff;color:#58a6ff}
@@ -59,15 +60,19 @@ def _page(title, active, body):
                         ("Options", "/options", "options"),
                         ("Crypto", "/crypto", "crypto")))
     mode = store.mode()
-    nxt = "paper" if mode == "live" else "live"
+    nxt = store.next_mode()
     toggle = ("<form method='post' action='/mode' style='margin:0'>"
               f"<input type='hidden' name='mode' value='{nxt}'>"
               f"<button class='btn'>Switch to {nxt.upper()}</button></form>")
     warn = ""
     if mode == "live":
         warn = ("<div class='card' style='border-color:#f85149'>"
-                "<b style='color:#f85149'>LIVE MODE</b> - orders are sent to Dhan "
-                "with real money.</div>")
+                "<b style='color:#f85149'>LIVE MODE</b> - orders are sent to the real "
+                "venue with real money.</div>")
+    elif mode == "demo":
+        warn = ("<div class='card' style='border-color:#1f6feb'>"
+                "<b style='color:#58a6ff'>DEMO MODE</b> - orders go to the Delta "
+                "testnet (fake money, real order flow).</div>")
     head = ("<div class='hdr'><h1>PARALLAX</h1>"
             "<div style='display:flex;gap:10px;align-items:center'>"
             f"<span class='mode {mode}'>{mode.upper()}</span>{toggle}</div></div>"
@@ -156,21 +161,75 @@ def options():
         "8 lots, intraday, TP 50% / SL 2x, IV>RV filter"))
 
 
+def _crypto_state():
+    """State published by parallax.apps.worker.crypto_smc into the journal store."""
+    raw = store.get_setting("crypto_state", "")
+    if not raw:
+        return None
+    try:
+        import json as _json
+        return _json.loads(raw)
+    except Exception:
+        return None
+
+
 @app.get("/crypto", response_class=HTMLResponse)
 def crypto():
+    import json as _json
     trades = store.trades(strategy="crypto", limit=100)
-    quotes = "<div class='grid'>"
-    try:
-        from parallax.adapters.broker.delta import DeltaBroker
-        d = DeltaBroker(dry_run=True)
-        for sym, label in (("BTC", "BTC/USD"), ("XAUT", "XAUT/USD")):
-            q = d.get_quote("DELTA:" + sym)
-            quotes += _stat(label, _fmt(q.last, 0))
-    except Exception:
-        quotes += _stat("BTC/USD", "-") + _stat("XAUT/USD", "-")
-    quotes += "</div>"
-    body = _card("Crypto (Delta) - paper", quotes,
-                 "Strategy engine coming later - page reserved for BTC + XAUTUSD.")
+    st = _crypto_state()
+    mode = store.mode()
+
+    if st is None:
+        body = _card("Crypto (Delta) - SMC BTCUSD",
+                     "<p style='color:#8b949e'>Worker has not run yet. Start it with "
+                     "<code>python -m parallax.apps.worker.crypto_smc</code>.</p>")
+    else:
+        px = st.get("last_price")
+        pos = st.get("position")
+        order = st.get("order")
+        zone = st.get("zone")
+        grid = ("<div class='grid'>"
+                + _stat("Mode", mode.upper())
+                + _stat("BTC/USD", _fmt(px, 1) if px else "-")
+                + _stat("Bias", {1: "LONG", -1: "SHORT", 0: "flat"}.get(st.get("bias"), "-"))
+                + _stat("Equity", "Rs" + _fmt(st.get("equity")))
+                + "</div>")
+        body = _card("Crypto (Delta) - SMC FVG retest, BTCUSD 1h", grid,
+                     "Incremental SMC state machine. Last completed bar: "
+                     + str(st.get("last_bar")) + "  (processed "
+                     + str(st.get("bars_processed")) + ")")
+
+        if pos:
+            pg = ("<div class='grid'>"
+                  + _stat("Side", "LONG" if pos["side"] > 0 else "SHORT")
+                  + _stat("Entry", _fmt(pos["entry"], 1))
+                  + _stat("Stop", _fmt(pos["stop"], 1))
+                  + _stat("Qty", _fmt(pos["qty"], 0) + " cts")
+                  + "</div>")
+            body += _card("Open position", pg)
+        elif order:
+            og = ("<div class='grid'>"
+                  + _stat("Resting", "BUY" if order["side"] > 0 else "SELL")
+                  + _stat("Limit", _fmt(order["price"], 1))
+                  + _stat("Stop", _fmt(order["stop"], 1))
+                  + _stat("Expires in", str(order["bars_left"]) + " bars")
+                  + "</div>")
+            body += _card("Working order", og)
+        else:
+            z = ""
+            if zone:
+                z = ("Zone " + ("bullish" if zone["direction"] > 0 else "bearish")
+                     + ": " + _fmt(zone["bot"], 1) + " - " + _fmt(zone["top"], 1))
+            body += _card("Working order", "<p style='color:#8b949e'>Flat - no order "
+                          + ("(" + z + ")" if z else "") + "</p>")
+
+        ev = st.get("events") or []
+        if ev:
+            body += _card("Recent decisions",
+                          "<pre style='font-size:12px;color:#8b949e;white-space:pre-wrap'>"
+                          + "\n".join(str(e) for e in ev[-6:]) + "</pre>")
+
     body += _card("Journal", _trade_rows(trades))
     return _page("Crypto", "crypto", body)
 

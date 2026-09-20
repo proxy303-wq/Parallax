@@ -65,10 +65,22 @@ class JournalStore:
             return float(dhan_equity or 0.0)
         return self.paper_capital()
 
+    # Three modes.  paper = local simulation, demo = Delta testnet, live = real money.
+    MODES = ("paper", "demo", "live")
+
     def set_mode(self, mode: str) -> str:
-        m = "live" if str(mode).lower().startswith("live") else "paper"
+        s = str(mode).lower()
+        m = "live" if s.startswith("live") else ("demo" if s.startswith("demo") else "paper")
         self.set_setting("mode", m)
         return m
+
+    def next_mode(self) -> str:
+        """Cycle paper -> demo -> live -> paper (what the dashboard button does)."""
+        try:
+            i = self.MODES.index(self.mode())
+        except ValueError:
+            i = 0
+        return self.MODES[(i + 1) % len(self.MODES)]
 
     def _init(self):
         with self._connect() as c:

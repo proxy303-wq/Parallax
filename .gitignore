@@ -8,5 +8,6 @@ reports/
 parallax.db
 *.db-journal
 _*.py
+!__init__.py
 _*.sh
 .dhan_token_generated
