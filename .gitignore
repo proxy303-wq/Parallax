@@ -11,3 +11,6 @@ _*.py
 !__init__.py
 _*.sh
 .dhan_token_generated
+# Dhan scrip master cache (26 MB, downloaded on demand) - never commit this
+data/security_id_list.csv
+data/*.part
