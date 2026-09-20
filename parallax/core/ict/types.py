@@ -22,6 +22,21 @@ class ICTConfig:
     ote_high: float = 0.79
     # the draw-on-liquidity objective must clear this reward:risk
     min_rr: float = 1.5
+    # require_touch=True  -> the signal only fires on a bar that has ALREADY
+    #                        traded into the OTE band. That is fine for a
+    #                        decision engine that acts on the close, but it is
+    #                        NOT a causal entry: the level is derived from the
+    #                        same bar's range, so the touch is history.
+    # require_touch=False -> the signal fires as soon as displacement + MSS +
+    #                        DOL are confirmed, and the caller rests a LIMIT at
+    #                        .entry for the retracement.
+    # Measured, Jun-Sep 2026 NIFTY 5m, 3 lots, causal replay (strict_combo):
+    #   require_touch=True  -> 5-6 trades, PF 1.45-2.52, +Rs 7.1k to +13.8k
+    #   require_touch=False -> 16-22 trades, PF 0.36-0.59, -Rs 32.6k to -34.2k
+    # The same-bar touch is doing real work as a retracement-quality filter, so
+    # the default stays True: resting a limit at every confirmed displacement
+    # makes the strategy materially worse, not better.
+    require_touch: bool = True
 
 
 @dataclass

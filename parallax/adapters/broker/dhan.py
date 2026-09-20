@@ -14,7 +14,11 @@ to send real orders.
 from __future__ import annotations
 
 import csv
+import os
+import time
+import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
 from parallax.contracts import (
     AccountState, BrokerReconciliation, CancelAck, ModifyAck,
@@ -26,6 +30,45 @@ from parallax.adapters.env import env
 from .dhan_auth import resolve_token
 
 DEFAULT_SCRIP_MASTER = r"C:\PrOxyTradingTerminal\reports\security_id_list.csv"
+# repo-local cache: the Windows path above does not exist on the VPS, and without
+# a scrip master resolve_contract() cannot produce a securityId, so the futures
+# leg silently places nothing at all.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+LOCAL_SCRIP_MASTER = str(_REPO_ROOT / "data" / "security_id_list.csv")
+SCRIP_MASTER_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
+SCRIP_MAX_AGE_DAYS = 7.0
+
+
+def default_scrip_master() -> str:
+    """Explicit override -> legacy Windows file -> repo-local cache."""
+    p = os.environ.get("PARALLAX_SCRIP_MASTER") or ""
+    if p:
+        return p
+    if os.path.exists(DEFAULT_SCRIP_MASTER):
+        return DEFAULT_SCRIP_MASTER
+    return LOCAL_SCRIP_MASTER
+
+
+def ensure_scrip_master(path: str, url: str = SCRIP_MASTER_URL,
+                        max_age_days: float = SCRIP_MAX_AGE_DAYS) -> str:
+    """Return a usable scrip-master path, downloading Dhan's copy when stale."""
+    if os.path.exists(path) and path != LOCAL_SCRIP_MASTER:
+        return path                       # an explicit / legacy file always wins
+    fresh = (os.path.exists(path) and
+             (time.time() - os.path.getmtime(path)) < max_age_days * 86400)
+    if fresh:
+        return path
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".part"
+    req = urllib.request.Request(url, headers={"User-Agent": "parallax/1.0"})
+    with urllib.request.urlopen(req, timeout=300) as r, open(tmp, "wb") as fh:
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            fh.write(chunk)
+    os.replace(tmp, path)
+    return path
 
 # Dhan order status -> PARALLAX OrderStatus
 DHAN_STATUS_MAP = {
@@ -47,7 +90,7 @@ def _map_status(s: str) -> OrderStatus:
 
 class DhanBroker(BrokerAdapter):
     def __init__(self, client_id=None, access_token=None, dry_run=True,
-                 instrument="NIFTY", scrip_master=DEFAULT_SCRIP_MASTER,
+                 instrument="NIFTY", scrip_master=None,
                  product_type="INTRADAY", exchange_segment="NSE_FNO",
                  connect_on_init=True):
         self.client_id = client_id or env("DHAN_CLIENT_ID")
@@ -56,7 +99,7 @@ class DhanBroker(BrokerAdapter):
         self.totp_secret = env("DHAN_TOTP_SECRET")
         self.dry_run = bool(dry_run)
         self.instrument_name = instrument
-        self.scrip_master = scrip_master
+        self.scrip_master = scrip_master or default_scrip_master()
         self.product_type = product_type
         self.exchange_segment = exchange_segment
         self._api = None
@@ -100,8 +143,11 @@ class DhanBroker(BrokerAdapter):
         if self._contract is not None:
             return self._contract
         rows: list[tuple[str, str, str, str]] = []
+        path = self.scrip_master
+        if not os.path.exists(path):
+            path = ensure_scrip_master(path)
         try:
-            with open(self.scrip_master, encoding="utf-8") as fh:
+            with open(path, encoding="utf-8") as fh:
                 for r in csv.DictReader(fh):
                     if (r.get("SEM_INSTRUMENT_NAME") or "") != "FUTIDX":
                         continue
@@ -119,7 +165,7 @@ class DhanBroker(BrokerAdapter):
             rows = []
         if not rows:
             raise RuntimeError(
-                f"no FUTIDX contract for {self.instrument_name} in {self.scrip_master}")
+                f"no FUTIDX contract for {self.instrument_name} in {path}")
         rows.sort(key=lambda x: x[0])
         today = datetime.now().date()
         for expiry, sym, sid, lot in rows:

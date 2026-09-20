@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from parallax.contracts import (
-    InstrumentId, InstrumentType, OrderIntent, OrderType, Side,
+    InstrumentId, InstrumentType, OrderIntent, OrderStatus, OrderType, Side,
     ValidatedOrderIntent,
 )
 from parallax.adapters.broker.dhan import DhanBroker
@@ -35,9 +35,15 @@ NIFTY_SCrip = "13"
 
 class LiveRunner:
     def __init__(self, poll_seconds: int = 3, max_bar_age: int = 400,
-                 lots_futures: int = 3, lots_options: int = 8):
+                 lots_futures: int = 3, lots_options: int = 8,
+                 bar_seconds: int = 300, paper_slippage: float = 0.5,
+                 max_entry_drift: float = 0.002):
         self.poll = poll_seconds
         self.max_bar_age = max_bar_age
+        self.bar_seconds = bar_seconds   # 5-minute bars: a bar is only usable
+                                         # once its close time has passed
+        self.paper_slippage = paper_slippage      # NIFTY points, paper fills only
+        self.max_entry_drift = max_entry_drift    # reject a fill this far past entry
         self.lots_futures = lots_futures
         self.lots_options = lots_options
         self.store = JournalStore()
@@ -56,7 +62,8 @@ class LiveRunner:
         self._broker_mode = None
         self._last_token_check = 0.0
         self.refreshed_on = None
-        self.gates = {"skipped_stale": 0, "skipped_crossed": 0, "trades": 0}
+        self.gates = {"skipped_stale": 0, "skipped_crossed": 0, "trades": 0,
+                      "skipped_rejected": 0, "skipped_drift": 0}
 
     # ---- mode / broker ---------------------------------------------------
     def _broker(self) -> DhanBroker:
@@ -145,8 +152,41 @@ class LiveRunner:
 
     # ---- gates -----------------------------------------------------------
     def _fresh(self, bar) -> bool:
-        age = (datetime.now(IST) - bar.ts).total_seconds()
+        """A bar is usable only once it has CLOSED and is not yet stale.
+
+        Dhan stamps an intraday bar at its START time.  The old check only
+        bounded the age from above, so a bar stamped 09:20 read at 09:22 passed
+        as 'fresh' while it was still forming - the engine then acted on a
+        half-built candle, which is neither causal nor reproducible.  The
+        window is now age in [bar_seconds, max_bar_age].
+        """
+        now = datetime.now(IST)
+        age = (now - bar.ts).total_seconds()
+        if age < self.bar_seconds:
+            return False
         return age <= self.max_bar_age
+
+    def _fill_price(self, ack, bar, side: Side):
+        """The price we actually got, or None if the order did not fill.
+
+        The journal used to be written at sig.entry even though a MARKET order
+        was sent seconds after the signal bar closed - by which time the market
+        had left that level.  That booked a trade that never happened.
+        """
+        if ack.status in (OrderStatus.REJECTED, OrderStatus.CANCELLED,
+                          OrderStatus.EXPIRED):
+            return None
+        if ack.avg_price:
+            return float(ack.avg_price)
+        if ack.status == OrderStatus.FILLED:
+            return float(bar.close)
+        if self._broker().dry_run:
+            # paper: there is no real fill, so price it where the market is now
+            # - the signal bar's close, which is the next bar's open - and
+            # charge a realistic market-order crossing.
+            px = float(bar.close)
+            return px + self.paper_slippage if side == Side.BUY else px - self.paper_slippage
+        return None
 
     def _price_ok(self, side: Side, entry: float) -> bool:
         """Entry-validity gate: do not chase a price that already crossed."""
@@ -288,14 +328,36 @@ class LiveRunner:
         intent = OrderIntent(intent_id="live_" + bar.ts.isoformat(), decision_id="ict",
                              risk_auth_id="live", instrument=str(self.instrument),
                              side=side, quantity=float(self.lots_futures),
-                             order_type=OrderType.MARKET, price=sig.entry,
+                             order_type=OrderType.MARKET, price=0.0,
                              idempotency_key="live_" + bar.ts.isoformat(), timestamp=bar.ts)
         ack = self._broker().place_order(ValidatedOrderIntent(intent, True))
-        self.active = {"side": side, "entry": sig.entry, "qty": self.lots_futures,
-                       "em": ExitManager(side, sig.entry, sig.stop, self.exit_cfg,
+        fill = self._fill_price(ack, bar, side)
+        if fill is None:
+            self.gates["skipped_rejected"] += 1
+            self._say(f"[FUT] REJECT {side.value} [{ack.status.value}] "
+                      f"{str(ack.message)[:60]}")
+            return
+        # a fill on the wrong side of the stop is not a trade, it is a mistake
+        if (side == Side.BUY and fill <= sig.stop) or            (side == Side.SELL and fill >= sig.stop):
+            self.gates["skipped_drift"] += 1
+            self._say(f"[FUT] SKIP {side.value} - fill {fill:.0f} is past the "
+                      f"stop {sig.stop:.0f}")
+            return
+        sign = 1.0 if side == Side.BUY else -1.0
+        drift = sign * (fill - sig.entry)
+        if drift > self.max_entry_drift * sig.entry:
+            self.gates["skipped_drift"] += 1
+            self._flatten_immediately(side, fill)
+            self._say(f"[FUT] SKIP {side.value} - filled {fill:.0f} vs signal "
+                      f"{sig.entry:.0f} ({drift:.0f} pts chased)")
+            return
+        self.active = {"side": side, "entry": fill, "qty": self.lots_futures,
+                       "signal_entry": sig.entry,
+                       "em": ExitManager(side, fill, sig.stop, self.exit_cfg,
                                          target=sig.target)}
-        self._say(f"[FUT] ENTRY {side.value} {self.lots_futures}L {sig.entry:.0f} "
-                  f"stop {sig.stop:.0f} tgt {sig.target:.0f} [{ack.status.value}]")
+        self._say(f"[FUT] ENTRY {side.value} {self.lots_futures}L signal "
+                  f"{sig.entry:.0f} filled {fill:.0f} stop {sig.stop:.0f} "
+                  f"tgt {sig.target:.0f} [{ack.status.value}]")
 
     def _options_tick(self, bar) -> None:
         """0DTE condor: enter once near the open, manage intraday, exit at
@@ -331,6 +393,20 @@ class LiveRunner:
             elif now.hour == 15 and now.minute >= 15:
                 ot.close("eod")
                 self.gates["trades"] += 1
+
+    def _flatten_immediately(self, side: Side, fill: float) -> None:
+        """Undo an entry that was filled too far past the signal."""
+        try:
+            opp = Side.SELL if side == Side.BUY else Side.BUY
+            intent = OrderIntent(
+                intent_id="flat_" + str(time.time()), decision_id="ict",
+                risk_auth_id="live", instrument=str(self.instrument), side=opp,
+                quantity=float(self.lots_futures), order_type=OrderType.MARKET,
+                price=0.0, idempotency_key="flat_" + str(time.time()),
+                timestamp=datetime.now(timezone.utc))
+            self._broker().place_order(ValidatedOrderIntent(intent, True))
+        except Exception as e:
+            print("flatten failed:", type(e).__name__, str(e)[:100])
 
     def _say(self, msg: str) -> None:
         print(msg)

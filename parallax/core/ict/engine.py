@@ -190,9 +190,12 @@ def _detect(state: MarketState, bars: list[Bar], config: ICTConfig,
         ote_top = impulse_high - impulse * config.ote_low      # 0.62 retrace
         ote_bottom = impulse_high - impulse * config.ote_high  # 0.79 retrace
         entry = impulse_high - impulse * 0.705
-        # retracement trigger: the limit at the 70.5% OTE midpoint only fills
-        # when price actually reaches it, and not if the sweep is re-taken on the same bar
-        if bars[-1].low > entry or bars[-1].low <= sweep_extreme:
+        # retracement trigger.  With require_touch the signal only exists once
+        # price has already been at the level (same-bar, not causal - see the
+        # config).  Either way the setup dies if the sweep extreme is re-taken.
+        if config.require_touch and bars[-1].low > entry:
+            return None
+        if bars[-1].low <= sweep_extreme:
             return None
         target = _dol(state, entry, direction)
         if target is None or target <= entry:
@@ -212,7 +215,9 @@ def _detect(state: MarketState, bars: list[Bar], config: ICTConfig,
     ote_top = impulse_low + impulse * config.ote_high      # 0.79 retrace
     ote_bottom = impulse_low + impulse * config.ote_low    # 0.62 retrace
     entry = impulse_low + impulse * 0.705
-    if bars[-1].high < entry or bars[-1].high >= sweep_extreme:
+    if config.require_touch and bars[-1].high < entry:
+        return None
+    if bars[-1].high >= sweep_extreme:
         return None
     target = _dol(state, entry, direction)
     if target is None or target >= entry:
