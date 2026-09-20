@@ -128,11 +128,12 @@ def _mark_generation() -> None:
 
 
 def generate_access_token(client_id: str, pin: str, totp_code: str,
-                          min_interval_hours: float = 24.0) -> str | None:
+                          min_interval_hours: float = 23.0) -> str | None:
     """Generate a fresh TOTP access token.
 
-    GUARDED to at most one generation per 'min_interval_hours' (default 24h,
-    matching the token lifetime).  Every generation INVALIDATES the previous
+    GUARDED to at most one generation per 'min_interval_hours' (default 23h -
+    one hour under the 24h token life, so a daily fixed-time refresh at 10:00
+    always passes rather than being blocked by a few seconds' drift).  Every generation INVALIDATES the previous
     token, so re-generating while a usable one is still inside its window can
     only break a working session.  RenewToken (which extends an existing token
     without creating a new one) is NOT rate-limited by this guard and is always
@@ -198,9 +199,9 @@ def refresh_token(client_id: str, pin: str = "", totp_secret: str = "",
             save_token(new)
             notify("token regenerated via TOTP")
             return new, "regenerated via TOTP"
-        if new is None and age < 24.0:
+        if new is None and age < 23.0:
             return None, (f"generation skipped: last was {age:.1f}h ago "
-                          f"(limit is one per 24h)")
+                          f"(limit is one per day)")
     return None, "refresh failed (no usable token)"
 
 

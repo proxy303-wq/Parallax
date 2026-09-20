@@ -106,7 +106,8 @@ class LiveRunner:
         if not force and st.get("hours_left", 99) >= 12:
             return st
         cid = env("DHAN_CLIENT_ID")
-        tok, src = refresh_token(cid, env("DHAN_PIN"), env("DHAN_TOTP_SECRET"))
+        tok, src = refresh_token(cid, env("DHAN_PIN"), env("DHAN_TOTP_SECRET"),
+                                 min_hours=(0.0 if force else 12.0))
         self._broker_cache = None
         self._say("[TOKEN] " + str(src) + " (was " + str(st.get("hours_left")) + "h left)")
         return token_status()
@@ -215,20 +216,13 @@ class LiveRunner:
             try:
                 now = datetime.now(IST)
                 today = now.date()
-                # 08:00 daily token refresh (before the session)
-                if now.hour == 8 and self.refreshed_on != today:
+                # daily token refresh at 10:00 IST (one per day)
+                if now.hour == 10 and self.refreshed_on != today:
                     self.refreshed_on = today
                     try:
                         self._say(self._daily_refresh(now))
                     except Exception as e:
                         self._say("[TOKEN] 08:00 refresh error: " + str(e)[:90])
-                # periodic token health: refresh well before expiry, any hour
-                if time.time() - self._last_token_check > 1200:
-                    self._last_token_check = time.time()
-                    try:
-                        self._ensure_token()
-                    except Exception as e:
-                        print("token check error:", type(e).__name__, str(e)[:100])
                 if today.weekday() < 5:
                     if now.hour == 9 and 15 <= now.minute <= 25 and self.armed_on != today:
                         self._say(self._armed_message(now))
