@@ -31,7 +31,8 @@ import numpy as np
 import pandas as pd
 
 from parallax.adapters.smc import smc
-from parallax.config.crypto import SMCConfig, CONTRACT_VALUE, MAX_NOTIONAL_USD
+from parallax.config.crypto import (SMCConfig, CONTRACT_VALUE, MAX_NOTIONAL_USD,
+                                    USD_INR)
 
 # Feature window. Rows are consumed CONFIRM bars behind the window end, so the window
 # only has to be long enough for swing detection to be well conditioned.
@@ -313,13 +314,21 @@ class SMCCrypto:
         return dec
 
     def _exit(self, dec: Decision, price: float, reason: str) -> Decision:
+        """P&L in RUPEES.
+
+        pos.qty is in Delta CONTRACTS (1 contract = 0.001 BTC) and prices are USD, so the
+        move is scaled by CONTRACT_VALUE and then converted at USD_INR.  Omitting either
+        factor mis-states P&L by 1000x and in the wrong currency -- the R multiple stays
+        correct because it is a ratio, which is exactly why this hid for so long.
+        """
         pos = self.position
         self.position = None
         dec.action = "exit"
         dec.reason = reason
         dec.side = pos.side
         dec.exit_price = price
-        dec.pnl = (price - pos.entry) * pos.qty * pos.side
+        dec.pnl = ((price - pos.entry) * pos.qty * pos.side
+                   * CONTRACT_VALUE * USD_INR)
         dec.r_multiple = dec.pnl / pos.risk if pos.risk else 0.0
         self._log("exit %s @%.1f pnl=%.2f R=%+.2f" % (reason, price, dec.pnl, dec.r_multiple))
         return dec
@@ -331,14 +340,22 @@ class SMCCrypto:
                                  initial_stop=stop, peak=entry, trough=entry,
                                  opened_ts=ts, opened_bar=self.bar_count)
 
-    def size(self, equity: float, entry: float, stop: float) -> float:
-        """Risk-based size in Delta contracts (1 contract = 0.001 BTC)."""
+    def size(self, equity_inr: float, entry: float, stop: float) -> float:
+        """Risk-based size in Delta contracts (1 contract = 0.001 BTC).
+
+        equity_inr is the account balance in RUPEES while entry/stop are USD prices, so
+        the balance is converted to USD before any division.  Skipping that conversion
+        divides INR risk by a USD distance and over-sizes by ~88x.
+        """
         dist = abs(entry - stop)
-        if dist <= 0 or equity <= 0:
+        if dist <= 0 or equity_inr <= 0:
             return 0.0
-        risk = equity * self.cfg.risk_pct
-        qty = risk / dist
-        qty = min(qty, (equity * self.cfg.max_leverage) / entry, MAX_NOTIONAL_USD / entry)
+        equity_usd = equity_inr / USD_INR
+        risk_usd = equity_usd * self.cfg.risk_pct
+        qty = risk_usd / dist                                  # BTC
+        qty = min(qty,
+                  (equity_usd * self.cfg.max_leverage) / entry,  # leverage cap
+                  MAX_NOTIONAL_USD / entry)                      # venue cap
         return max(0.0, float(math.floor(qty / CONTRACT_VALUE)))
 
     def bootstrap(self, bars: pd.DataFrame) -> None:

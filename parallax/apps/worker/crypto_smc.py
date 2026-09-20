@@ -22,10 +22,11 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from parallax.adapters.broker.delta import DeltaBroker
+from parallax.adapters.telegram import TelegramBot
 from parallax.contracts import (ExecutionMode, OrderIntent, OrderType, Side,
                                 ValidatedOrderIntent, new_id)
 from parallax.config.crypto import (DEFAULT, DEMO_BASE, LIVE_BASE, MAX_NOTIONAL_USD,
-                                    CONTRACT_VALUE, base_url)
+                                    CONTRACT_VALUE, USD_INR, base_url)
 from parallax.core.smc_crypto import SMCCrypto
 from parallax.web.store import JournalStore
 
@@ -34,16 +35,28 @@ RES = {"1h": 3600}
 
 
 def fetch_bars(symbol: str = "BTCUSD", interval: str = "1h", count: int = 900,
-               venue: str = DEMO_BASE) -> pd.DataFrame:
-    """Public candles - no auth. Uses the DEMO venue by default (same prices)."""
+               venue: str = DEMO_BASE, attempts: int = 4) -> pd.DataFrame:
+    """Public candles - no auth. Retries: the venue drops connections intermittently
+    (WinError 10054 seen in the first paper run)."""
     step = RES[interval]
     end = int(time.time())
     start = end - count * step
     url = ("%s%s?resolution=%s&symbol=%s&start=%d&end=%d"
            % (venue, CANDLES, interval, symbol, start, end))
-    req = urllib.request.Request(url, headers={"User-Agent": "parallax/1.0",
-                                                "Accept": "application/json"})
-    raw = json.loads(urllib.request.urlopen(req, timeout=30).read().decode())
+    last = None
+    for a in range(attempts):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "parallax/1.0",
+                                                        "Accept": "application/json"})
+            raw = json.loads(urllib.request.urlopen(req, timeout=30).read().decode())
+            break
+        except Exception as e:
+            last = e
+            if a == attempts - 1:
+                raise
+            time.sleep(1.5 * (a + 1))
+    else:
+        raise last
     rows = raw.get("result", []) or []
     df = pd.DataFrame(rows)
     if df.empty:
@@ -73,6 +86,24 @@ class CryptoWorker:
         self.broker = None
         self.broker_mode = None
         self.trades_today = 0
+        self.tg = TelegramBot()
+        self._last_err_notify = 0.0
+        self._last_heartbeat = 0.0
+
+    # -- notifications ----------------------------------------------------
+    def notify(self, text: str) -> None:
+        if self.tg.configured:
+            try:
+                self.tg.send(text)
+            except Exception as e:
+                print("  ! telegram failed:", e, flush=True)
+
+    def notify_error(self, err, every: int = 900) -> None:
+        """Throttled so a flaky network cannot spam the channel."""
+        now = time.time()
+        if now - self._last_err_notify >= every:
+            self._last_err_notify = now
+            self.notify("[PARALLAX crypto] %s mode: %s\n%s" % (self.mode(), type(err).__name__, err))
 
     # -- mode / broker ----------------------------------------------------
     def mode(self) -> str:
@@ -140,19 +171,36 @@ class CryptoWorker:
             self.store.set_position(self.symbol, "crypto",
                                     "BUY" if dec.side > 0 else "SELL", 0.0,
                                     dec.price, dec.stop, 0.0)
+            self.notify(
+                "[PARALLAX crypto] %s ORDER RESTING\n"
+                "%s %s\nLimit %.1f\nStop  %.1f\nBar %s" % (
+                    m.upper(), self.symbol, "BUY" if dec.side > 0 else "SELL",
+                    dec.price, dec.stop, dec.ts))
         elif dec.action == "fill":
             eq = self.equity()
             qty = self.machine.size(eq, dec.price, dec.stop)
             if qty <= 0:
                 return
+            # defence in depth: never let a sizing bug risk more than 5% of the account
+            risk_inr = qty * CONTRACT_VALUE * abs(dec.price - dec.stop) * USD_INR
+            if eq > 0 and risk_inr > 0.05 * eq:
+                self.notify("[PARALLAX crypto] SIZE REJECTED\nrisk Rs%.0f = %.1f%% of equity"
+                            % (risk_inr, 100.0 * risk_inr / eq))
+                return
             if m != "paper":
                 if self._send("buy" if dec.side > 0 else "sell", qty) is None:
                     return
-            risk = abs(dec.price - dec.stop) * qty
+            risk = qty * CONTRACT_VALUE * abs(dec.price - dec.stop) * USD_INR   # rupees
             self.machine.open_position(dec.side, dec.price, qty, dec.stop, risk, ts=dec.ts)
             self.store.set_position(self.symbol, "crypto",
                                     "BUY" if dec.side > 0 else "SELL", qty,
                                     dec.price, dec.stop, 0.0)
+            self.notify(
+                "[PARALLAX crypto] %s FILLED\n%s %s\nEntry %.1f\nStop  %.1f\n"
+                "Qty   %d contracts (%.3f BTC)\nRisk  Rs%.0f (%.2f%% of equity)" % (
+                    m.upper(), self.symbol, "BUY" if dec.side > 0 else "SELL",
+                    dec.price, dec.stop, int(qty), qty * CONTRACT_VALUE,
+                    risk, 100.0 * risk / eq if eq else 0.0))
         elif dec.action == "exit":
             if m != "paper" and self.machine.position is not None:
                 pos = self.machine.position
@@ -163,6 +211,11 @@ class CryptoWorker:
                                     dec.exit_price, dec.pnl, dec.reason,
                                     note="R=%+.2f" % dec.r_multiple)
             self.store.clear_positions()
+            self.notify(
+                "[PARALLAX crypto] %s CLOSED (%s)\n%s %s @ %.1f\nP&L   Rs%+.0f  (%+.2fR)\n"
+                "Equity Rs%.0f" % (m.upper(), dec.reason, self.symbol,
+                                   "LONG" if dec.side > 0 else "SHORT", dec.exit_price,
+                                   dec.pnl, dec.r_multiple, self.equity()))
 
     # -- one cycle --------------------------------------------------------
     def tick(self) -> list:
@@ -190,13 +243,28 @@ class CryptoWorker:
     def run(self):
         print("crypto worker: %s %s | mode=%s" % (self.symbol, self.interval, self.mode()),
               flush=True)
+        self.notify("[PARALLAX crypto] worker started\n%s %s | mode %s\n"
+                    "paper capital Rs%.0f" % (self.symbol, self.interval,
+                                              self.mode().upper(), self.store.paper_capital()))
         while True:
             try:
                 for d in self.tick():
                     print("  %s %s side=%d @%.1f" % (d.ts, d.action, d.side, d.price),
                           flush=True)
+                # hourly heartbeat so the channel shows the bot is alive
+                if time.time() - self._last_heartbeat >= 3600:
+                    self._last_heartbeat = time.time()
+                    st = self.machine.snapshot()
+                    self.notify("[PARALLAX crypto] alive | %s | bias %s | %s | price %.1f"
+                                % (self.mode().upper(),
+                                   {1: "LONG", -1: "SHORT", 0: "flat"}.get(st["bias"]),
+                                   ("POSITION open" if st["position"] else
+                                    ("order working" if st["order"] else "flat")),
+                                   float(self.bars["close"].iloc[-1]) if self.bars is not None
+                                   and len(self.bars) else 0.0))
             except Exception as e:
                 print("tick error:", e, flush=True)
+                self.notify_error(e)
             time.sleep(self.poll)
 
 

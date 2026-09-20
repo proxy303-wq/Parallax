@@ -20,6 +20,11 @@ GST = 1.18
 MAKER_RATE = 0.0002 * GST      # 2.36 bp
 TAKER_RATE = 0.0005 * GST      # 5.90 bp
 
+# The account is INR-margined but BTCUSD is quoted in USD.  Every risk calculation must
+# convert the account balance to USD first -- dividing INR risk by a USD stop distance is
+# how a Rs 8L account ends up risking Rs 26L per trade.
+USD_INR = 88.0
+
 # Delta BTCUSD (inverse perpetual): 1 contract = 0.001 BTC, tick 0.5
 CONTRACT_VALUE = 0.001
 TICK_SIZE = 0.5
