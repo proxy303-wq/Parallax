@@ -44,11 +44,12 @@ cp deploy/parallax-crypto-eth.service /etc/systemd/system/parallax-crypto-eth.se
 systemctl daemon-reload
 systemctl enable -q parallax-crypto parallax-crypto-eth
 
-echo "== 4. restart =="
+echo "== 4. restart (web too: the crypto dashboard code changed) =="
+systemctl restart parallax-web
 systemctl restart parallax-crypto
 systemctl restart parallax-crypto-eth
 sleep 30
-for u in parallax-crypto parallax-crypto-eth; do
+for u in parallax-web parallax-crypto parallax-crypto-eth; do
   echo "   $u: $(systemctl is-active $u)  $(systemctl show $u -p NRestarts --value) restarts"
 done
 
