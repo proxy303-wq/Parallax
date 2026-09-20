@@ -189,16 +189,30 @@ def crypto():
         pos = st.get("position")
         order = st.get("order")
         zone = st.get("zone")
+        # --- worker liveness: a dead worker must be visible, not silent ---
+        age_txt, age_cls = "-", ""
+        try:
+            from datetime import datetime, timezone
+            lb = str(st.get("last_bar", "")).replace("+00:00", "+0000")
+            ts = datetime.strptime(lb[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            secs = (datetime.now(timezone.utc) - ts).total_seconds()
+            age_txt = ("%.0fm" % (secs / 60)) if secs < 5400 else ("%.1fh" % (secs / 3600))
+            # a 1h strategy should have a bar no older than ~2 intervals
+            age_cls = "neg" if secs > 2.5 * 3600 else "pos"
+        except Exception:
+            pass
+
         grid = ("<div class='grid'>"
                 + _stat("Mode", mode.upper())
                 + _stat("BTC/USD", _fmt(px, 1) if px else "-")
                 + _stat("Bias", {1: "LONG", -1: "SHORT", 0: "flat"}.get(st.get("bias"), "-"))
                 + _stat("Equity", "Rs" + _fmt(st.get("equity")))
+                + _stat("Bar age", age_txt, age_cls)
                 + "</div>")
         body = _card("Crypto (Delta) - SMC FVG retest, BTCUSD 1h", grid,
-                     "Incremental SMC state machine. Last completed bar: "
-                     + str(st.get("last_bar")) + "  (processed "
-                     + str(st.get("bars_processed")) + ")")
+                     "Last completed bar " + str(st.get("last_bar")) + "  |  "
+                     + str(st.get("bars_processed")) + " bars processed  |  "
+                     + "entries rest as limits (maker), targets limits, stops market (taker)")
 
         if pos:
             pg = ("<div class='grid'>"
@@ -229,6 +243,24 @@ def crypto():
             body += _card("Recent decisions",
                           "<pre style='font-size:12px;color:#8b949e;white-space:pre-wrap'>"
                           + "\n".join(str(e) for e in ev[-6:]) + "</pre>")
+
+        # --- frozen strategy parameters, straight from the config ---
+        try:
+            from parallax.config.crypto import DEFAULT, USD_INR, MAX_NOTIONAL_USD
+            pg = ("<div class='grid'>"
+                  + _stat("Risk / trade", "%.2f%%" % (DEFAULT.risk_pct * 100))
+                  + _stat("Leverage", "%.0fx" % DEFAULT.max_leverage)
+                  + _stat("Stop floor", "%.1f ATR" % DEFAULT.stop_atr_floor)
+                  + _stat("Trail", "%.1f ATR" % DEFAULT.trail_atr)
+                  + _stat("Zone", DEFAULT.zone.upper() + " " + DEFAULT.interval)
+                  + _stat("Direction", "long+short" if DEFAULT.allow_short else "long only")
+                  + "</div>")
+            body += _card("Strategy parameters", pg,
+                          "Frozen from the walk-forward (REPORT.md s13-s17). "
+                          "USD/INR %.1f | venue notional cap $%s" %
+                          (USD_INR, _fmt(MAX_NOTIONAL_USD)))
+        except Exception:
+            pass
 
     body += _card("Journal", _trade_rows(trades))
     return _page("Crypto", "crypto", body)
