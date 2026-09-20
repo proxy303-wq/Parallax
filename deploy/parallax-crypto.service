@@ -1,0 +1,32 @@
+# PARALLAX crypto worker - SMC BTCUSD (Delta Exchange India)
+#
+# Runs the smart-money-concepts fair-value-gap strategy on BTCUSD 1h.  The mode is
+# NOT set here: the worker reads it from the journal store every tick, so the
+# dashboard button (paper -> demo -> live) is the single control and a unit-file
+# edit can never silently move it to live.
+#
+# Separate unit on purpose so a crypto restart never bounces the dashboard, the
+# Telegram chat bot, or the NIFTY futures runner.
+#
+# install:  cp deploy/parallax-crypto.service /etc/systemd/system/ \
+#           && systemctl daemon-reload && systemctl enable --now parallax-crypto
+#
+# logs:     journalctl -u parallax-crypto -f
+[Unit]
+Description=PARALLAX crypto worker (SMC BTCUSD, Delta Exchange)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/parallax
+EnvironmentFile=/opt/parallax/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/parallax/.venv/bin/python -m parallax.apps.worker.crypto_smc --poll 60
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
