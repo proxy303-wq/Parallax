@@ -1,0 +1,39 @@
+# PARALLAX crypto worker #2 - SMC ETHUSD (Delta Exchange India)
+#
+# Second instance of the same worker, trading a different symbol.  The symbol is a CLI
+# flag; everything else (strategy, costs, sizing) is identical and the contract spec is
+# looked up per symbol (ETHUSD is a 0.01 contract, BTCUSD 0.001).
+#
+# WHY A SEPARATE UNIT, and what is still shared:
+#   * separate process  -> a crash or restart never bounces the BTC worker
+#   * separate state key -> each worker publishes crypto_state_<symbol>, so the two books
+#     never overwrite each other on the dashboard
+#   * SHARED trade mode  -> settings.mode is global.  Flipping the dashboard to demo or
+#     live moves BOTH crypto workers, not just this one.  Paper is the safe default.
+#   * SHARED capital     -> both workers size off the same paper capital, so the combined
+#     book risks 2 x 0.75% per cycle.  Treat the aggregate as one portfolio.
+#   * SHARED journal db  -> positions/trades are keyed by instrument and an exit clears
+#     only its own row (store.clear_position).
+#
+# install:  cp deploy/parallax-crypto-eth.service /etc/systemd/system/ \
+#           && systemctl daemon-reload && systemctl enable --now parallax-crypto-eth
+#
+# logs:     journalctl -u parallax-crypto-eth -f
+[Unit]
+Description=PARALLAX crypto worker (SMC ETHUSD, Delta Exchange)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/parallax
+EnvironmentFile=/opt/parallax/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/parallax/.venv/bin/python -m parallax.apps.worker.crypto_smc --symbol ETHUSD --poll 60
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

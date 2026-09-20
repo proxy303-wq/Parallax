@@ -31,8 +31,7 @@ import numpy as np
 import pandas as pd
 
 from parallax.adapters.smc import smc
-from parallax.config.crypto import (SMCConfig, CONTRACT_VALUE, MAX_NOTIONAL_USD,
-                                    USD_INR)
+from parallax.config.crypto import SMCConfig, USD_INR, product
 
 # Feature window. Rows are consumed CONFIRM bars behind the window end, so the window
 # only has to be long enough for swing detection to be well conditioned.
@@ -164,6 +163,7 @@ class SMCCrypto:
     def __init__(self, cfg: SMCConfig | None = None, window: int = WINDOW,
                  confirm: int = CONFIRM):
         self.cfg = cfg or SMCConfig()
+        self.prod = product(self.cfg.symbol)   # contract size differs per symbol
         self.window = window
         self.confirm = confirm
         self.bias = 0
@@ -316,10 +316,12 @@ class SMCCrypto:
     def _exit(self, dec: Decision, price: float, reason: str) -> Decision:
         """P&L in RUPEES.
 
-        pos.qty is in Delta CONTRACTS (1 contract = 0.001 BTC) and prices are USD, so the
-        move is scaled by CONTRACT_VALUE and then converted at USD_INR.  Omitting either
-        factor mis-states P&L by 1000x and in the wrong currency -- the R multiple stays
-        correct because it is a ratio, which is exactly why this hid for so long.
+        pos.qty is in Delta CONTRACTS (0.001 for BTCUSD, 0.01 for ETHUSD) and prices are
+        USD, so the move is scaled by this symbol's contract_value and then converted at
+        USD_INR.  Omitting either factor mis-states P&L by 1000x and in the wrong currency
+        -- the R multiple stays correct because it is a ratio, which is exactly why this
+        hid for so long.  Using the WRONG symbol's contract_value keeps the P&L right but
+        reports the wrong contract count, so the spec is looked up, never assumed.
         """
         pos = self.position
         self.position = None
@@ -328,7 +330,7 @@ class SMCCrypto:
         dec.side = pos.side
         dec.exit_price = price
         dec.pnl = ((price - pos.entry) * pos.qty * pos.side
-                   * CONTRACT_VALUE * USD_INR)
+                   * self.prod.contract_value * USD_INR)
         dec.r_multiple = dec.pnl / pos.risk if pos.risk else 0.0
         self._log("exit %s @%.1f pnl=%.2f R=%+.2f" % (reason, price, dec.pnl, dec.r_multiple))
         return dec
@@ -341,7 +343,7 @@ class SMCCrypto:
                                  opened_ts=ts, opened_bar=self.bar_count)
 
     def size(self, equity_inr: float, entry: float, stop: float) -> float:
-        """Risk-based size in Delta contracts (1 contract = 0.001 BTC).
+        """Risk-based size in Delta contracts (0.001 BTC / 0.01 ETH / 0.001 XAUT).
 
         equity_inr is the account balance in RUPEES while entry/stop are USD prices, so
         the balance is converted to USD before any division.  Skipping that conversion
@@ -352,11 +354,11 @@ class SMCCrypto:
             return 0.0
         equity_usd = equity_inr / USD_INR
         risk_usd = equity_usd * self.cfg.risk_pct
-        qty = risk_usd / dist                                  # BTC
+        qty = risk_usd / dist                                  # base units (BTC/ETH)
         qty = min(qty,
                   (equity_usd * self.cfg.max_leverage) / entry,  # leverage cap
-                  MAX_NOTIONAL_USD / entry)                      # venue cap
-        return max(0.0, float(math.floor(qty / CONTRACT_VALUE)))
+                  self.prod.max_notional_usd / entry)            # venue cap
+        return max(0.0, float(math.floor(qty / self.prod.contract_value)))
 
     def bootstrap(self, bars: pd.DataFrame) -> None:
         """One-time warm-up: replay the whole history through the SIGNAL state only

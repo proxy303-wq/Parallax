@@ -118,6 +118,16 @@ class JournalStore:
         with self._connect() as c:
             c.execute("DELETE FROM positions")
 
+    def clear_position(self, instrument):
+        """Clear ONE instrument's row.
+
+        A worker closing its own trade must never wipe the table: with two crypto workers
+        sharing this journal store, a global DELETE erases the other symbol's open
+        position and the dashboard silently shows nothing while a position is live.
+        """
+        with self._connect() as c:
+            c.execute("DELETE FROM positions WHERE instrument=?", (instrument,))
+
     # ---- reads (dashboard) ---------------------------------------------
     def trades(self, strategy=None, limit=100):
         q = "SELECT ts,strategy,instrument,side,qty,entry,exit,pnl,outcome,note FROM trades"

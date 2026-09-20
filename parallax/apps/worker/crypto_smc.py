@@ -1,4 +1,9 @@
-"""Crypto worker - runs the SMC BTCUSD strategy in paper, demo or live mode.
+"""Crypto worker - runs the SMC strategy on ONE symbol in paper, demo or live mode.
+
+The symbol is a parameter (--symbol BTCUSD|ETHUSD|XAUTUSD, default BTCUSD), so a second
+instance can paper-trade a second market.  Two workers on one journal store must not
+tread on each other, so the dashboard state key is per symbol and an exit clears only
+its OWN position row -- see state_key and clear_position.
 
 Mode comes from the shared journal store, so the dashboard toggle drives it:
     paper -> fills simulated locally against live Delta prices, nothing sent
@@ -17,6 +22,7 @@ import argparse
 import json
 import time
 import urllib.request
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -25,8 +31,7 @@ from parallax.adapters.broker.delta import DeltaBroker
 from parallax.adapters.telegram import TelegramBot
 from parallax.contracts import (ExecutionMode, OrderIntent, OrderType, Side,
                                 ValidatedOrderIntent, new_id)
-from parallax.config.crypto import (DEFAULT, DEMO_BASE, LIVE_BASE, MAX_NOTIONAL_USD,
-                                    CONTRACT_VALUE, USD_INR, base_url)
+from parallax.config.crypto import DEFAULT, DEMO_BASE, LIVE_BASE, USD_INR, base_url, product
 from parallax.core.smc_crypto import SMCCrypto
 from parallax.web.store import JournalStore
 
@@ -80,7 +85,9 @@ class CryptoWorker:
         self.symbol = symbol
         self.interval = interval
         self.poll = poll
-        self.cfg = DEFAULT
+        # The contract spec is per symbol: ETHUSD is a 0.01 contract, BTCUSD 0.001.
+        self.cfg = replace(DEFAULT, symbol=symbol)
+        self.prod = product(symbol)
         self.machine = SMCCrypto(self.cfg)
         self.bars: pd.DataFrame | None = None
         self.broker = None
@@ -89,6 +96,12 @@ class CryptoWorker:
         self.tg = TelegramBot()
         self._last_err_notify = 0.0
         self._last_heartbeat = 0.0
+
+    @property
+    def state_key(self) -> str:
+        """Dashboard state is keyed PER SYMBOL so concurrent workers cannot overwrite
+        each other and make the dashboard flicker between two books."""
+        return "crypto_state_" + self.symbol
 
     # -- notifications ----------------------------------------------------
     def notify(self, text: str) -> None:
@@ -182,7 +195,7 @@ class CryptoWorker:
             if qty <= 0:
                 return
             # defence in depth: never let a sizing bug risk more than 5% of the account
-            risk_inr = qty * CONTRACT_VALUE * abs(dec.price - dec.stop) * USD_INR
+            risk_inr = qty * self.prod.contract_value * abs(dec.price - dec.stop) * USD_INR
             if eq > 0 and risk_inr > 0.05 * eq:
                 self.notify("[PARALLAX crypto] SIZE REJECTED\nrisk Rs%.0f = %.1f%% of equity"
                             % (risk_inr, 100.0 * risk_inr / eq))
@@ -190,7 +203,7 @@ class CryptoWorker:
             if m != "paper":
                 if self._send("buy" if dec.side > 0 else "sell", qty) is None:
                     return
-            risk = qty * CONTRACT_VALUE * abs(dec.price - dec.stop) * USD_INR   # rupees
+            risk = qty * self.prod.contract_value * abs(dec.price - dec.stop) * USD_INR  # rupees
             self.machine.open_position(dec.side, dec.price, qty, dec.stop, risk, ts=dec.ts)
             self.store.set_position(self.symbol, "crypto",
                                     "BUY" if dec.side > 0 else "SELL", qty,
@@ -199,7 +212,7 @@ class CryptoWorker:
                 "[PARALLAX crypto] %s FILLED\n%s %s\nEntry %.1f\nStop  %.1f\n"
                 "Qty   %d contracts (%.3f BTC)\nRisk  Rs%.0f (%.2f%% of equity)" % (
                     m.upper(), self.symbol, "BUY" if dec.side > 0 else "SELL",
-                    dec.price, dec.stop, int(qty), qty * CONTRACT_VALUE,
+                    dec.price, dec.stop, int(qty), qty * self.prod.contract_value,
                     risk, 100.0 * risk / eq if eq else 0.0))
         elif dec.action == "exit":
             if m != "paper" and self.machine.position is not None:
@@ -210,7 +223,8 @@ class CryptoWorker:
                                     float(getattr(dec, "qty", 0) or 0), 0.0,
                                     dec.exit_price, dec.pnl, dec.reason,
                                     note="R=%+.2f" % dec.r_multiple)
-            self.store.clear_positions()
+            # clear ONLY this symbol: a global wipe would delete the other worker's position
+            self.store.clear_position(self.symbol)
             self.notify(
                 "[PARALLAX crypto] %s CLOSED (%s)\n%s %s @ %.1f\nP&L   Rs%+.0f  (%+.2fR)\n"
                 "Equity Rs%.0f" % (m.upper(), dec.reason, self.symbol,
@@ -237,7 +251,7 @@ class CryptoWorker:
         snap["last_price"] = float(self.bars["close"].iloc[-1]) if len(self.bars) else None
         snap["last_bar"] = str(self.bars.index[-1]) if len(self.bars) else None
         snap["events"] = self.machine.events[-8:]
-        self.store.set_setting("crypto_state", json.dumps(snap))
+        self.store.set_setting(self.state_key, json.dumps(snap))
         return out
 
     def run(self):
@@ -272,8 +286,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true", help="single cycle then exit")
     ap.add_argument("--poll", type=int, default=60)
+    ap.add_argument("--symbol", default="BTCUSD",
+                    help="Delta perpetual to trade: BTCUSD (default), ETHUSD, XAUTUSD")
+    ap.add_argument("--interval", default="1h")
     a = ap.parse_args()
-    w = CryptoWorker(poll=a.poll)
+    w = CryptoWorker(symbol=a.symbol.upper(), interval=a.interval, poll=a.poll)
     if a.once:
         ds = w.tick()          # tick() refreshes internally; do not refresh twice
         print("bars:", 0 if w.bars is None else len(w.bars))

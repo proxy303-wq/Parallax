@@ -262,6 +262,27 @@ it is the difference between a mediocre and a decent result.
 
 ---
 
+## 8. What was changed in the live system (paper deployment)
+
+On the strength of the ETH result, ETH was added to the **paper** deployment. That required
+three fixes, because the worker assumed BTC everywhere:
+
+| Fix | Why it was needed |
+|---|---|
+| `config.crypto.product(symbol)` per-symbol spec | ETHUSD is a **0.01** contract vs BTCUSD's 0.001. Sizing ETH with the BTC constant reports **10x** the real contract count -- and the P&L stays *accidentally* correct (qty x contract_value is invariant), so it would have hidden until a demo/live order went out at ten times the intended size. XAUTUSD also differs: 1bp maker/taker, $50k cap, 0.5% maintenance. |
+| `crypto_state_<SYMBOL>` key + `JournalStore.clear_position` | Two workers share one journal store. A single `crypto_state` key would have the two books overwrite each other on the dashboard, and the old global `clear_positions()` call would erase the *other* symbol's live position on any exit. |
+| `--symbol` CLI flag on the worker | One code path, one instance per market; `deploy/parallax-crypto-eth.service` is the second unit. |
+
+**Shared-state caveats, now documented in `deploy/README.md`:** the trade mode
+(`settings.mode`) is **global**, so flipping the dashboard to demo or live moves *both* crypto
+workers; and the paper capital is shared, so the combined book risks ~2 x 0.75% per cycle.
+
+Verification for these changes: `tests/test_crypto_symbols.py` (6 tests) pins the contract
+specs, the sizing ratio, the P&L invariance, the per-symbol state keys and the position
+isolation. Full suite: **94 passed**.
+
+---
+
 ### Reproducing this report
 
 ```powershell
@@ -295,4 +316,7 @@ python src\run_frozen.py data\XAUTUSD_india_1h.parquet "XAUT" --since 2026-04-17
 | `src/basis_check.py` | PAXG-vs-XAUT proxy validation |
 | `src/gold_crosscheck.py` | three-way XAUT/PAXG price cross-check |
 | `src/vps_status.py` | read-only VPS deployment status |
+| `src/vps_deploy.py` | deploy + verify both crypto workers in paper mode |
+| `src/smoke_worker.py` | hermetic worker smoke test (throwaway db, stubbed Telegram) |
+| `src/check_dashboard.py` | asserts /crypto renders one correctly-labelled card per symbol |
 | `out/folds_*.csv` | per-fold walk-forward records |

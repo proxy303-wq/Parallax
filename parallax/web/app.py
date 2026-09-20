@@ -161,29 +161,36 @@ def options():
         "8 lots, intraday, TP 50% / SL 2x, IV>RV filter"))
 
 
-def _crypto_state():
-    """State published by parallax.apps.worker.crypto_smc into the journal store."""
-    raw = store.get_setting("crypto_state", "")
+# Every symbol gets its own card.  Each worker publishes its own state key, so adding a
+# symbol here is all the dashboard needs to show a second book.
+CRYPTO_SYMBOLS = ("BTCUSD", "ETHUSD", "XAUTUSD")
+
+
+def _crypto_state(symbol: str):
+    """State published by parallax.apps.worker.crypto_smc for ONE symbol.
+
+    Falls back to the legacy un-scoped 'crypto_state' key so a worker still running older
+    code renders on the BTC card instead of disappearing.
+    """
+    import json as _json
+    raw = store.get_setting("crypto_state_" + symbol, "")
+    if not raw and symbol == "BTCUSD":
+        raw = store.get_setting("crypto_state", "")
     if not raw:
         return None
     try:
-        import json as _json
         return _json.loads(raw)
     except Exception:
         return None
 
 
-@app.get("/crypto", response_class=HTMLResponse)
-def crypto():
-    import json as _json
-    trades = store.trades(strategy="crypto", limit=100)
-    st = _crypto_state()
-    mode = store.mode()
-
+def _crypto_card(symbol: str, mode: str):
+    st = _crypto_state(symbol)
     if st is None:
-        body = _card("Crypto (Delta) - SMC BTCUSD",
+        return _card("Crypto (Delta) - SMC " + symbol,
                      "<p style='color:#8b949e'>Worker has not run yet. Start it with "
-                     "<code>python -m parallax.apps.worker.crypto_smc</code>.</p>")
+                     "<code>python -m parallax.apps.worker.crypto_smc --symbol " + symbol
+                     + "</code>.</p>")
     else:
         px = st.get("last_price")
         pos = st.get("position")
@@ -204,12 +211,13 @@ def crypto():
 
         grid = ("<div class='grid'>"
                 + _stat("Mode", mode.upper())
-                + _stat("BTC/USD", _fmt(px, 1) if px else "-")
+                + _stat(symbol, _fmt(px, 1) if px else "-")
                 + _stat("Bias", {1: "LONG", -1: "SHORT", 0: "flat"}.get(st.get("bias"), "-"))
                 + _stat("Equity", "Rs" + _fmt(st.get("equity")))
                 + _stat("Bar age", age_txt, age_cls)
                 + "</div>")
-        body = _card("Crypto (Delta) - SMC FVG retest, BTCUSD 1h", grid,
+        body = _card("Crypto (Delta) - SMC FVG retest, %s %s"
+                     % (symbol, st.get("interval") or "1h"), grid,
                      "Last completed bar " + str(st.get("last_bar")) + "  |  "
                      + str(st.get("bars_processed")) + " bars processed  |  "
                      + "entries rest as limits (maker), targets limits, stops market (taker)")
@@ -246,22 +254,33 @@ def crypto():
 
         # --- frozen strategy parameters, straight from the config ---
         try:
-            from parallax.config.crypto import DEFAULT, USD_INR, MAX_NOTIONAL_USD
+            from parallax.config.crypto import DEFAULT, USD_INR, product
+            sp = product(symbol)          # contract size is per symbol, never assumed
             pg = ("<div class='grid'>"
                   + _stat("Risk / trade", "%.2f%%" % (DEFAULT.risk_pct * 100))
                   + _stat("Leverage", "%.0fx" % DEFAULT.max_leverage)
                   + _stat("Stop floor", "%.1f ATR" % DEFAULT.stop_atr_floor)
                   + _stat("Trail", "%.1f ATR" % DEFAULT.trail_atr)
                   + _stat("Zone", DEFAULT.zone.upper() + " " + DEFAULT.interval)
+                  + _stat("Contract", _fmt(sp.contract_value, 4) + " " + symbol[:3])
                   + _stat("Direction", "long+short" if DEFAULT.allow_short else "long only")
                   + "</div>")
             body += _card("Strategy parameters", pg,
                           "Frozen from the walk-forward (REPORT.md s13-s17). "
-                          "USD/INR %.1f | venue notional cap $%s" %
-                          (USD_INR, _fmt(MAX_NOTIONAL_USD)))
+                          "USD/INR %.1f | venue notional cap $%s | fees %.2f/%.2f bp" %
+                          (USD_INR, _fmt(sp.max_notional_usd),
+                           sp.maker_rate * 10000, sp.taker_rate * 10000))
         except Exception:
             pass
 
+    return body
+
+
+@app.get("/crypto", response_class=HTMLResponse)
+def crypto():
+    trades = store.trades(strategy="crypto", limit=100)
+    mode = store.mode()
+    body = "".join(_crypto_card(s, mode) for s in CRYPTO_SYMBOLS)
     body += _card("Journal", _trade_rows(trades))
     return _page("Crypto", "crypto", body)
 

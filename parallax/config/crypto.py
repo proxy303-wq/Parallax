@@ -26,10 +26,43 @@ TAKER_RATE = 0.0005 * GST      # 5.90 bp
 USD_INR = 88.0
 
 # Delta BTCUSD (inverse perpetual): 1 contract = 0.001 BTC, tick 0.5
+# These remain the BTC defaults for anything not yet symbol-aware.
 CONTRACT_VALUE = 0.001
 TICK_SIZE = 0.5
 MAINTENANCE_MARGIN = 0.0025    # 0.25%, from the product spec
 MAX_NOTIONAL_USD = 100_000.0   # max_leverage_notional
+
+
+@dataclass(frozen=True)
+class ProductSpec:
+    """Per-symbol Delta contract spec (GET /v2/products/<symbol>, read 2026-09-20).
+
+    These are NOT interchangeable.  ETHUSD is a **0.01** contract -- 10x BTCUSD's 0.001 --
+    and XAUTUSD is a 0.001 contract with 1bp maker/taker, half the equity margin and half
+    the notional cap.  Sizing an ETH book with the BTC constant reports 10x the real
+    contract count; the P&L stays accidentally correct because qty x contract_value is
+    invariant, which is exactly why that bug would hide until a demo/live order went out
+    with ten times the intended size.
+    """
+    symbol: str
+    contract_value: float      # units of the base asset per contract
+    tick_size: float
+    maintenance_margin: float
+    max_notional_usd: float
+    maker_rate: float
+    taker_rate: float
+
+
+PRODUCTS: dict[str, ProductSpec] = {
+    "BTCUSD": ProductSpec("BTCUSD", 0.001, 0.5, 0.0025, 100_000.0, MAKER_RATE, TAKER_RATE),
+    "ETHUSD": ProductSpec("ETHUSD", 0.01, 0.05, 0.0025, 100_000.0, MAKER_RATE, TAKER_RATE),
+    "XAUTUSD": ProductSpec("XAUTUSD", 0.001, 0.01, 0.005, 50_000.0, 0.0001, 0.0001),
+}
+
+
+def product(symbol: str) -> ProductSpec:
+    """Contract spec for a symbol; unknown symbols fall back to the validated BTC default."""
+    return PRODUCTS.get(str(symbol).upper(), PRODUCTS["BTCUSD"])
 
 
 def base_url(mode: str) -> str:
