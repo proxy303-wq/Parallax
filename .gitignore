@@ -9,3 +9,4 @@ parallax.db
 *.db-journal
 _*.py
 _*.sh
+.dhan_token_generated

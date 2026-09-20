@@ -105,10 +105,47 @@ def renew_token(client_id: str, token: str) -> str | None:
     return data.get("accessToken", "") or None
 
 
-def generate_access_token(client_id: str, pin: str, totp_code: str) -> str | None:
+_GEN_STAMP = os.path.join(_REPO_ROOT, ".dhan_token_generated")
+
+
+def hours_since_generation() -> float:
+    """Hours since the last TOTP generation (inf if never / unreadable)."""
+    try:
+        if os.path.exists(_GEN_STAMP):
+            with open(_GEN_STAMP, encoding="utf-8") as fh:
+                return (time.time() - float(fh.read().strip())) / 3600.0
+    except (OSError, ValueError):
+        pass
+    return float("inf")
+
+
+def _mark_generation() -> None:
+    try:
+        with open(_GEN_STAMP, "w", encoding="utf-8") as fh:
+            fh.write(str(time.time()))
+    except OSError:
+        pass
+
+
+def generate_access_token(client_id: str, pin: str, totp_code: str,
+                          min_interval_hours: float = 24.0) -> str | None:
+    """Generate a fresh TOTP access token.
+
+    GUARDED to at most one generation per 'min_interval_hours' (default 24h,
+    matching the token lifetime).  Every generation INVALIDATES the previous
+    token, so re-generating while a usable one is still inside its window can
+    only break a working session.  RenewToken (which extends an existing token
+    without creating a new one) is NOT rate-limited by this guard and is always
+    tried first."""
+    age = hours_since_generation()
+    if age < min_interval_hours:
+        return None
     data = _http_json(f"{AUTH_BASE}/app/generateAccessToken", method="POST",
                       params={"dhanClientId": client_id, "pin": pin, "totp": totp_code})
-    return data.get("accessToken", "") or None
+    tok = data.get("accessToken", "") or None
+    if tok:
+        _mark_generation()
+    return tok
 
 
 
@@ -155,11 +192,15 @@ def refresh_token(client_id: str, pin: str = "", totp_secret: str = "",
     if pin and totp_secret:
         if os.environ.get("PARALLAX_AUTO_GENERATE_TOKEN", "true").lower() == "false":
             return None, "auto-generation disabled"
+        age = hours_since_generation()
         new = generate_access_token(client_id, pin, totp(totp_secret))
         if new and not token_is_expired(new, margin_s=0):
             save_token(new)
             notify("token regenerated via TOTP")
             return new, "regenerated via TOTP"
+        if new is None and age < 24.0:
+            return None, (f"generation skipped: last was {age:.1f}h ago "
+                          f"(limit is one per 24h)")
     return None, "refresh failed (no usable token)"
 
 
