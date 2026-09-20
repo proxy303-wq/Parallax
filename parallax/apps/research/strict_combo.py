@@ -66,7 +66,8 @@ def _state(inst, wb, ws, timeframe="5m"):
 
 
 def replay(bars, i0, i1, *, model="limit", gate=True, lots=LOTS,
-           slip_mult=1.0, fee_mult=1.0, timeframe="5m"):
+           slip_mult=1.0, fee_mult=1.0, timeframe="5m", require_touch=True,
+           book_at_signal=False):
     """Causal replay over bars[i0:i1]. Trades RECORDED only if opened in range."""
     inst = instrument()
     spec = spec_for(SYMBOL)
@@ -82,7 +83,7 @@ def replay(bars, i0, i1, *, model="limit", gate=True, lots=LOTS,
     vols = [b.volume for b in bars]
     series_all = ind.precompute(closes, highs, lows, vols, bars_per_year(timeframe))
 
-    ict_cfg = ICTConfig()
+    ict_cfg = ICTConfig(require_touch=require_touch)
     exit_cfg = ExitConfig()
     ttl = max(2, int(getattr(ict_cfg, "retrace_lookback", 6)))
 
@@ -107,13 +108,22 @@ def replay(bars, i0, i1, *, model="limit", gate=True, lots=LOTS,
                 px, _ = active["em"].update(bar.high, bar.low)
             if px is not None:
                 pnl = broker.close_position(instr, px) or 0.0
+                # what the journal WOULD have shown before the fix: the same
+                # trade, but booked at the signal price instead of the fill
+                _sg = 1.0 if active["side"] == Side.BUY else -1.0
+                _se = active.get("signal_entry", active["entry"])
+                _fees = ((_se + px) * active["qty"] * spec.point_value *
+                         spec.fee_rate * fee_mult)
+                pnl_sig = (_sg * (px - _se) * active["qty"] * spec.point_value
+                           - _fees)
                 in_window = AUG_FROM <= active["entry_time"].date() < AUG_TO
                 if in_window:
                     trades.append({
                         "entry_time": active["entry_time"], "exit_time": bar.ts,
                         "side": active["side"].value, "entry": round(active["entry"], 2),
                         "exit": round(px, 2), "qty": active["qty"],
-                        "pnl": round(pnl, 2),
+                        "pnl": round(pnl, 2), "pnl_sig": round(pnl_sig, 2),
+                        "signal_entry": round(active.get("signal_entry", 0.0), 2),
                         "outcome": ("WIN" if pnl > 0 else
                                     ("LOSS" if pnl < 0 else "SCRATCH")),
                         "r": round(active["em"].r_multiple, 3),
@@ -144,6 +154,7 @@ def replay(bars, i0, i1, *, model="limit", gate=True, lots=LOTS,
                     active = {
                         "side": pending["side"], "entry": entry, "qty": lots,
                         "entry_time": bar.ts, "hold": 0,
+                        "signal_entry": pending["entry"],
                         "em": ExitManager(pending["side"], entry, pending["stop"],
                                           exit_cfg, target=pending["target"]),
                     }
@@ -263,32 +274,64 @@ def main() -> None:
     print()
     print("=== NIFTY futures ICT, causal replay, %d lots ===" % LOTS)
     results = {}
-    for model in ("limit", "market"):
-        for gate in (False, True):
-            trades, stats = replay(bars, i0, last_aug, model=model, gate=gate)
-            tag = "%s/gate=%s" % (model, "on" if gate else "off")
-            total = summarise(tag, trades)
-            print("    signals=%d cost_gated=%d price_gated=%d filled=%d "
-                  "expired=%d  trades=%d" % (
-                      stats["signals"], stats.get("cost_gated", 0),
-                      stats.get("price_gated", 0),
-                      stats["filled"], stats["expired"], len(trades)))
-            results[(model, gate)] = (trades, total)
+    for touch in (True, False):
+        for model in ("limit", "market"):
+            for gate in (False, True):
+                if model == "market" and not touch:
+                    continue          # market entry does not care about the touch
+                trades, stats = replay(bars, i0, last_aug, model=model, gate=gate,
+                                       require_touch=touch)
+                tag = "touch=%s %s/gate=%s" % (
+                    "y" if touch else "n", model, "on" if gate else "off")
+                total = summarise(tag, trades)
+                print("    signals=%d cost_gated=%d price_gated=%d filled=%d "
+                      "expired=%d  trades=%d" % (
+                          stats["signals"], stats.get("cost_gated", 0),
+                          stats.get("price_gated", 0),
+                          stats["filled"], stats["expired"], len(trades)))
+                results[(touch, model, gate)] = (trades, total)
 
     print()
-    print("=== cost stress (limit, gate off) ===")
-    for sm in (1.0, 5.0, 10.0):
-        tr, _ = replay(bars, i0, last_aug, model="limit", gate=False, slip_mult=sm)
+    print("=== journal-booking error: market entry, live gates ===")
+    trb, _ = replay(bars, i0, last_aug, model="market", gate=True,
+                    require_touch=True)
+    summarise("booked at real fill", trb)
+    n = len(trb)
+    if n:
+        old = sum(t["pnl_sig"] for t in trb)
+        new = sum(t["pnl"] for t in trb)
+        wins_o = len([t for t in trb if t["pnl_sig"] > 0])
+        print("%-26s n=%2d win=%.3f total=Rs%9s  avg=Rs%7s" % (
+            "booked at sig.entry", n, wins_o / n, format(int(old), ","),
+            format(int(old / n), ",")))
+        print("    journal overstatement: Rs%s over %d trades (Rs%.0f/trade)" % (
+            format(int(new - old), ","), n, (new - old) / n))
+        print("    per trade  signal -> fill  drift:")
+        for t in trb:
+            d = t["signal_entry"] - t["entry"]
+            print("      %s %-4s signal %9.2f fill %9.2f  drift %+7.2f  "
+                  "pnl %8s -> %8s" % (
+                      t["entry_time"].strftime("%m-%d %H:%M"), t["side"],
+                      t["signal_entry"], t["entry"], d,
+                      format(int(t["pnl_sig"]), ","), format(int(t["pnl"]), ",")))
+
+    print()
+    print("=== cost stress on resting a limit at every displacement ===")
+    for sm in (1.0, 2.0, 5.0, 10.0):
+        tr, _ = replay(bars, i0, last_aug, model="limit", gate=True,
+                       require_touch=False, slip_mult=sm)
         summarise("slippage x%.0f" % sm, tr)
 
     print()
     print("=== CONTROL: the shipped (non-causal) engine on the same bars ===")
     shipped_comparison(bars, i0, last_aug)
 
-    for model in ("limit", "market"):
+    for key, label in (((False, "limit", True), "touch=n limit/gate=on  [LIVE DESIGN]"),
+                       ((True, "limit", False), "touch=y limit/gate=off"),
+                       ((True, "market", False), "touch=y market/gate=off")):
         print()
-        print("=== per-trade detail: %s / gate off ===" % model)
-        for t in results[(model, False)][0]:
+        print("=== per-trade detail: %s ===" % label)
+        for t in results[key][0]:
             print("  %s %-4s in=%9.2f out=%9.2f %-8s r=%6.2f Rs%8s -> %s" % (
                 t["entry_time"].strftime("%m-%d %H:%M"), t["side"], t["entry"],
                 t["exit"], t["reason"][:8], t["r"],

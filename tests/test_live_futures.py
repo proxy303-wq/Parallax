@@ -82,6 +82,76 @@ def test_paper_fill_crosses_the_spread():
     assert r._fill_price(ack, bar, Side.SELL) == bar.close - 0.5
 
 
+# ---- end-of-day time stop ------------------------------------------------
+
+def _flat_runner(entry=24000.0, side=Side.BUY, qty=3):
+    r = _runner()
+    r.bars = [_bar(datetime.now(IST))]
+    r.instrument = "NSE:NIFTY"
+    r.eod_exit_hm = (15, 15)
+    r.gates = {"trades": 0}
+    r.recorded = []
+    r.said = []
+    r.store = types.SimpleNamespace(
+        record_trade=lambda *a, **k: r.recorded.append(a))
+    r._say = lambda m: r.said.append(m)
+    r.active = {"side": side, "entry": entry, "qty": qty,
+                "em": types.SimpleNamespace(update=lambda h, l: (None, ""))}
+    return r
+
+
+def test_no_flatten_before_the_cutoff():
+    r = _flat_runner()
+    r._futures_housekeeping(datetime(2026, 8, 4, 15, 10, tzinfo=IST))
+    assert r.active is not None
+    assert not r.recorded
+
+
+def test_flatten_at_the_cutoff():
+    r = _flat_runner()
+    r._futures_housekeeping(datetime(2026, 8, 4, 15, 15, tzinfo=IST))
+    assert r.active is None
+    assert len(r.recorded) == 1
+
+
+def test_flatten_after_the_cutoff():
+    r = _flat_runner()
+    r._futures_housekeeping(datetime(2026, 8, 4, 15, 40, tzinfo=IST))
+    assert r.active is None
+
+
+def test_housekeeping_is_a_noop_when_flat():
+    r = _flat_runner()
+    r.active = None
+    r._futures_housekeeping(datetime(2026, 8, 4, 15, 30, tzinfo=IST))
+    assert not r.recorded
+
+
+# ---- exit accounting ------------------------------------------------------
+
+def test_close_futures_nets_fees_off_the_pnl():
+    r = _flat_runner(entry=24000.0)
+    r._close_futures(24050.0, "managed")
+    # gross = 50 pts x 3 lots x 65 = 9,750 ; fees = 0.01% of (24000+24050) x 195
+    gross = 50.0 * 3 * 65
+    fees = (24000.0 + 24050.0) * 195 * 0.0001
+    assert abs(r.recorded[0][6] - (gross - fees)) < 0.01
+    assert r.recorded[0][6] < gross           # fees are actually charged
+
+
+def test_close_futures_short_pnl_sign():
+    r = _flat_runner(entry=24000.0, side=Side.SELL)
+    r._close_futures(23950.0, "managed")
+    assert r.recorded[0][6] > 0               # a short that fell is a winner
+
+
+def test_close_futures_is_idempotent():
+    r = _flat_runner()
+    r._close_futures(24050.0, "eod")
+    r._close_futures(24050.0, "eod")
+    assert len(r.recorded) == 1
+
+
 def test_fill_is_never_the_signal_price():
     """The whole point: the booked entry must be a price the market had."""
     r = _runner()

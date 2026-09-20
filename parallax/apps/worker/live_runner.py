@@ -44,6 +44,7 @@ class LiveRunner:
                                          # once its close time has passed
         self.paper_slippage = paper_slippage      # NIFTY points, paper fills only
         self.max_entry_drift = max_entry_drift    # reject a fill this far past entry
+        self.eod_exit_hm = (15, 15)               # hard futures time stop (IST)
         self.lots_futures = lots_futures
         self.lots_options = lots_options
         self.store = JournalStore()
@@ -289,6 +290,10 @@ class LiveRunner:
                                     self._options_tick(newest)
                             else:
                                 self.gates["skipped_stale"] += 1
+                    # runs every poll, not only on a new bar: the 15:15 stop
+                    # must not wait for the next 5-minute bar to complete
+                    if futures_active(today):
+                        self._futures_housekeeping(now)
             except Exception as e:
                 print("runner error:", type(e).__name__, str(e)[:140])
             if max_seconds and time.time() - t0 > max_seconds:
@@ -308,14 +313,7 @@ class LiveRunner:
         if self.active is not None:
             px, _ = self.active["em"].update(bar.high, bar.low)
             if px is not None:
-                pnl = (px - self.active["entry"]) * (1 if self.active["side"] == Side.BUY else -1) * self.active["qty"] * 65
-                self.store.record_trade("futures", str(self.instrument),
-                                        self.active["side"].value, self.active["qty"],
-                                        self.active["entry"], px, round(pnl, 2),
-                                        "WIN" if pnl > 0 else "LOSS", "ICT")
-                self._say(f"[FUT] EXIT {self.active['side'].value} {self.active['entry']:.0f}->{px:.0f} Rs{pnl:,.0f}")
-                self.active = None
-                self.gates["trades"] += 1
+                self._close_futures(px, "managed")
             return
         sig = detect(state, self.bars, self.ict)
         if sig is None:
@@ -393,6 +391,48 @@ class LiveRunner:
             elif now.hour == 15 and now.minute >= 15:
                 ot.close("eod")
                 self.gates["trades"] += 1
+
+    def _close_futures(self, px: float, reason: str) -> None:
+        """Exit the futures position, net of fees, and journal the real numbers."""
+        if self.active is None:
+            return
+        a = self.active
+        sign = 1.0 if a["side"] == Side.BUY else -1.0
+        units = a["qty"] * 65.0
+        fees = (a["entry"] + px) * units * 0.0001      # NIFTY spec fee_rate
+        pnl = (px - a["entry"]) * sign * units - fees
+        try:
+            opp = Side.SELL if a["side"] == Side.BUY else Side.BUY
+            intent = OrderIntent(
+                intent_id="exit_" + str(time.time()), decision_id="ict",
+                risk_auth_id="live", instrument=str(self.instrument), side=opp,
+                quantity=float(a["qty"]), order_type=OrderType.MARKET, price=0.0,
+                idempotency_key="exit_" + str(time.time()),
+                timestamp=datetime.now(timezone.utc))
+            self._broker().place_order(ValidatedOrderIntent(intent, True))
+        except Exception as e:
+            print("futures exit order failed:", type(e).__name__, str(e)[:100])
+        self.store.record_trade("futures", str(self.instrument), a["side"].value,
+                                a["qty"], a["entry"], px, round(pnl, 2),
+                                "WIN" if pnl > 0 else "LOSS", "ICT-" + reason)
+        self._say(f"[FUT] EXIT {a['side'].value} {a['entry']:.0f}->{px:.0f} "
+                  f"Rs{pnl:,.0f} [{reason}]")
+        self.active = None
+        self.gates["trades"] += 1
+
+    def _futures_housekeeping(self, now) -> None:
+        """Hard time stop.  INTRADAY product is auto-squared-off by the broker
+        shortly after 15:15 with a penalty, and the backtest assumes a 15:15
+        flatten - the runner used to do neither, so a position could be carried
+        into the broker's square-off."""
+        if self.active is None:
+            return
+        if (now.hour, now.minute) < self.eod_exit_hm:
+            return
+        px = self.bars[-1].close if self.bars else 0.0
+        if px <= 0:
+            return
+        self._close_futures(px, "eod")
 
     def _flatten_immediately(self, side: Side, fill: float) -> None:
         """Undo an entry that was filled too far past the signal."""
