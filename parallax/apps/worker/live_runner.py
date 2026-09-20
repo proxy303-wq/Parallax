@@ -172,7 +172,7 @@ class LiveRunner:
             note = "0DTE engine is silent today (not an expiry day)."
         elif options_active(today):
             engine = "OPTIONS - NIFTY 0DTE hedged short strangle"
-            detail = f"{self.lots_options} lots, TP 50% / SL 2x"
+            detail = f"{self.lots_options} lots, TP ratchet 50/75/90, SL 2x"
             note = "Futures engine is silent today (0DTE expiry day)."
         else:
             engine = "NONE"
@@ -325,7 +325,7 @@ class LiveRunner:
         # -------- management: TP / SL / end of day --------
         if ot.active is not None:
             action = ot.manage()
-            if action in ("tp", "sl"):
+            if action != "hold":
                 ot.close(action)
                 self.gates["trades"] += 1
             elif now.hour == 15 and now.minute >= 15:
