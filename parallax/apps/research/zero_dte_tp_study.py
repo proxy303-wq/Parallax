@@ -43,7 +43,7 @@ def fetch(offset, otype, f, t):
     return {}
 
 WINDOWS = [("2026-06-10","2026-07-10"), ("2026-07-10","2026-08-09"), ("2026-08-09","2026-09-10")]
-OFFS = ["ATM%d" % j for j in range(-10, 11)]  # -10..+10 excluding 0, plus ATM below
+# ATM +-10 (+-500 pts) is the deepest ladder Dhan serves; ATM+-12 returns 0 rows.
 OFFS = ["ATM"] + ["ATM%+d" % j for j in range(-10, 11) if j != 0]
 
 ladder = {}
