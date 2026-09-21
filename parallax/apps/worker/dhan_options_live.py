@@ -103,9 +103,26 @@ class ZeroDteCondor:
                 "reason": "selected"}
 
     # ---- execution --------------------------------------------------------
+    #: Buy the hedges before selling the shorts.
+    #:
+    #: Order matters more than anything else here.  Dhan margins each leg as it
+    #: arrives, so a short placed before its hedge is NAKED - 8 lots of naked
+    #: ATM-2 NIFTY put prices at ~Rs 13.1 lakh (queried), and two of them at
+    #: ~Rs 26.2 lakh.  An Rs 8L account cannot post that, so short-first entry
+    #: is simply rejected.  With the long legs already in the account SPAN nets
+    #: the spread and the identical condor needs only its defined-risk ceiling,
+    #: ~Rs 32-44k.  Hedges-first is also the safer failure mode: if the shorts
+    #: then fail you are left long two cheap options with a bounded debit,
+    #: instead of short two naked ones.
+    LEG_ORDER = ("put_hedge", "call_hedge", "put_short", "call_short")
+
     def enter(self, plan: dict) -> list:
+        legs = plan["legs"]
+        order = [n for n in self.LEG_ORDER if n in legs]
+        order += [n for n in legs if n not in order]
         acks = []
-        for name, l in plan["legs"].items():
+        for name in order:
+            l = legs[name]
             side = "SELL" if name.endswith("short") else "BUY"
             c = OptionContract(symbol="NIFTY", strike=l["strike"], expiry="",
                                option_type=l["type"], lot_size=LOT,
