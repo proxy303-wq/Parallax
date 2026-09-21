@@ -1,10 +1,21 @@
 """Deterministic exit management — the profitable-trader playbook encoded.
 
-This is the single highest-impact lever the repo's own research validated:
-a raw ~31% win rate becomes ~93% by *locking profit* and *trailing*, instead
-of an all-or-nothing stop-vs-target.  Once price moves in favour by lock_r
-(multiples of the initial risk), the stop is moved to breakeven (plus an
-optional floor) and then trailed behind the peak/trough.
+The lock/trail mechanism is a lever, but the size of its benefit depends
+entirely on where the trade was entered.  The original "31% -> 93% win rate"
+measurement came from a backtest that filled on the same bar that set the
+impulse extreme: the entry landed at that bar's low, so 0.5R of MFE was
+credited instantly and the lock fired on noise-free heat.  With the fill made
+causal (see research/strict_combo) the picture inverts - over 2 years of
+NIFTY 5m, relaxing lock_r is monotone in both halves of the sample:
+
+    lock 0.5 (default)  PF 1.01  maxDD Rs 62,061
+    lock 1.5            PF 1.17  maxDD Rs 58,593
+    lock 3.0            PF 1.19  maxDD Rs 48,826
+    no lock at all      PF 1.20  maxDD Rs 42,365
+
+Once price moves in favour by lock_r (multiples of the initial risk), the
+stop is moved to breakeven (plus an optional floor) and then trailed behind
+the peak/trough.  Callers that want no lock should pass lock_r=inf.
 
 Pure functions of price levels — no state beyond the trade, no look-ahead.
 """

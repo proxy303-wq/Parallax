@@ -32,6 +32,17 @@ from parallax.web.store import JournalStore
 IST = timezone(timedelta(hours=5, minutes=30))
 NIFTY_SCrip = "13"
 
+# Futures exit policy.  Measured over 2 years of NIFTY 5m
+# (research/futures_study): the breakeven lock at 0.5R is reached by ordinary
+# noise - 0.5R is ~15 points against a ~12-point ATR - so it scratches trades
+# that would have run and pays the round trip each time.  Relaxing it is
+# monotone in BOTH the train and test windows:
+#     lock 0.5 (old)  PF 1.01  maxDD Rs 62,061   train PF 0.76
+#     lock 3.0        PF 1.19  maxDD Rs 48,826   train PF 0.91
+#     no lock at all  PF 1.20  maxDD Rs 42,365   train PF 0.95
+# So the futures exit is the structural stop plus the DOL target, nothing else.
+FUTURES_EXIT = ExitConfig(lock_r=float("inf"), trail_r=0.0)
+
 
 class LiveRunner:
     def __init__(self, poll_seconds: int = 3, max_bar_age: int = 400,
@@ -50,7 +61,7 @@ class LiveRunner:
         self.store = JournalStore()
         self.telegram = TelegramBot()
         self.ict = ICTConfig()
-        self.exit_cfg = ExitConfig()
+        self.exit_cfg = FUTURES_EXIT
         self.instrument = InstrumentId("NIFTY", InstrumentType.INDEX_FUTURE, exchange="NSE")
         self.bars: list = []
         self.active: dict | None = None
@@ -335,11 +346,19 @@ class LiveRunner:
             self._say(f"[FUT] REJECT {side.value} [{ack.status.value}] "
                       f"{str(ack.message)[:60]}")
             return
-        # a fill on the wrong side of the stop is not a trade, it is a mistake
-        if (side == Side.BUY and fill <= sig.stop) or            (side == Side.SELL and fill >= sig.stop):
+        # a fill on the wrong side of the stop, or already at/past the DOL
+        # target, is not a trade.  The second case used to open a position and
+        # then exit on the very next tick at the target, for a guaranteed loss.
+        if (side == Side.BUY and fill <= sig.stop) or (
+                side == Side.SELL and fill >= sig.stop):
             self.gates["skipped_drift"] += 1
             self._say(f"[FUT] SKIP {side.value} - fill {fill:.0f} is past the "
                       f"stop {sig.stop:.0f}")
+            return
+        if (fill >= sig.target) if side == Side.BUY else (fill <= sig.target):
+            self.gates["skipped_drift"] += 1
+            self._say(f"[FUT] SKIP {side.value} - fill {fill:.0f} is already at "
+                      f"the target {sig.target:.0f}, no room left")
             return
         sign = 1.0 if side == Side.BUY else -1.0
         drift = sign * (fill - sig.entry)

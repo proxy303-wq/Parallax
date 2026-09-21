@@ -151,6 +151,13 @@ def replay(bars, i0, i1, *, model="limit", gate=True, lots=LOTS,
                     idempotency_key="s%d" % i, timestamp=bar.ts), True))
                 if ack.status == OrderStatus.FILLED:
                     entry = ack.avg_price or fill
+                    _sgn = 1.0 if pending["side"] == Side.BUY else -1.0
+                    if _sgn * (pending["target"] - entry) <= 0:
+                        # filled at or past the DOL: no room left, no trade
+                        stats["no_room"] = stats.get("no_room", 0) + 1
+                        broker.close_position(instr, entry)
+                        pending = None
+                        continue
                     active = {
                         "side": pending["side"], "entry": entry, "qty": lots,
                         "entry_time": bar.ts, "hold": 0,

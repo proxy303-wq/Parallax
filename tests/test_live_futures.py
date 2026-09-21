@@ -8,7 +8,7 @@ Three defects this locks down:
 import types
 from datetime import datetime, timedelta
 
-from parallax.apps.worker.live_runner import IST, LiveRunner
+from parallax.apps.worker.live_runner import FUTURES_EXIT, IST, LiveRunner
 from parallax.contracts import Bar, OrderAck, OrderStatus, Side
 
 
@@ -27,6 +27,27 @@ def _runner(dry_run=True, **over):
 
 def _bar(ts):
     return Bar(ts=ts, open=100.0, high=101.0, low=99.0, close=100.5, volume=0.0)
+
+
+# ---- exit policy ----------------------------------------------------------
+
+def test_futures_exit_has_no_breakeven_lock():
+    """The 0.5R lock is reached by noise on 5m NIFTY and was costing ~2.2x PF."""
+    assert FUTURES_EXIT.lock_r == float("inf")
+    assert FUTURES_EXIT.trail_r == float(0.0)
+
+
+def test_unlocked_exit_never_moves_the_stop():
+    from parallax.core.execution import ExitManager
+    from parallax.contracts import Side
+    em = ExitManager(Side.BUY, 24000.0, 23970.0, FUTURES_EXIT, target=24100.0)
+    px = None
+    for h, l in ((24020.0, 24010.0), (24090.0, 24070.0), (24050.0, 23960.0)):
+        px, reason = em.update(h, l)
+        if px is None:
+            assert em.stop == 23970.0          # never dragged to breakeven
+    assert px == 23970.0 and reason == "stop"  # a 0.9R winner given back, as
+                                               # designed: stop + DOL only
 
 
 # ---- completed-bar gate ---------------------------------------------------
