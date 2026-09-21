@@ -46,7 +46,7 @@ FUTURES_EXIT = ExitConfig(lock_r=float("inf"), trail_r=0.0)
 
 class LiveRunner:
     def __init__(self, poll_seconds: int = 3, max_bar_age: int = 400,
-                 lots_futures: int = 3, lots_options: int = 8,
+                 lots_futures: int = 3, lots_options: int = 10,
                  bar_seconds: int = 300, paper_slippage: float = 0.5,
                  max_entry_drift: float = 0.002):
         self.poll = poll_seconds
@@ -224,7 +224,8 @@ class LiveRunner:
             note = "0DTE engine is silent today (not an expiry day)."
         elif options_active(today):
             engine = "OPTIONS - NIFTY 0DTE hedged short strangle"
-            detail = f"{self.lots_options} lots, TP ratchet 50/75/90, SL 2x"
+            detail = (f"{self.lots_options} lots, TP ratchet 50/75/90, SL 2x, "
+                      f"max loss ~Rs{(100 - 16) * 65 * self.lots_options:,.0f}/day")
             note = "Futures engine is silent today (0DTE expiry day)."
         else:
             engine = "NONE"
