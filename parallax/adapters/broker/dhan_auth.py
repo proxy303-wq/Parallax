@@ -155,10 +155,37 @@ def generate_access_token(client_id: str, pin: str, totp_code: str,
 # token health + proactive refresh
 # ------------------------------------------------------------
 
+def active_token() -> tuple[str, str]:
+    """The token resolve_token() would actually use, and where it lives.
+
+    DHAN_ACCESS_TOKEN in the environment and the saved token file disagree the
+    moment any refresh has happened: the env var is a stale leftover and the
+    file holds the live one.  Picking env blindly made token_status() report an
+    expired token while the system was working fine, and made _ensure_token()
+    fire a refresh on every call - and a TOTP refresh INVALIDATES the working
+    token, so that path can only ever break a live session.
+    """
+    from parallax.adapters.env import env as _env
+    etok = _env("DHAN_ACCESS_TOKEN") or ""
+    if etok and not token_is_expired(etok, margin_s=0):
+        return etok, "env"
+    ftok = load_saved_token() or ""
+    if ftok and not token_is_expired(ftok, margin_s=0):
+        return ftok, "saved file"
+    for name, tok in (("env (expired)", etok), ("saved file (expired)", ftok)):
+        if tok:
+            return tok, name
+    return "", "none"
+
+
 def token_status(token: str | None = None) -> dict:
     """Report the access token's type and remaining life (health check)."""
     from parallax.adapters.env import env as _env
-    tok = token or _env("DHAN_ACCESS_TOKEN") or load_saved_token() or ""
+    src = "explicit"
+    if token:
+        tok = token
+    else:
+        tok, src = active_token()
     exp = token_expiry(tok)
     hours = round((exp - time.time()) / 3600, 2) if exp else -1.0
     ttype = ""
@@ -169,7 +196,7 @@ def token_status(token: str | None = None) -> dict:
     except Exception:
         pass
     return {"type": ttype, "hours_left": hours, "expires_at": exp,
-            "valid": hours > 0, "token_file": DEFAULT_TOKEN_FILE}
+            "valid": hours > 0, "source": src, "token_file": DEFAULT_TOKEN_FILE}
 
 
 def refresh_token(client_id: str, pin: str = "", totp_secret: str = "",
@@ -180,10 +207,9 @@ def refresh_token(client_id: str, pin: str = "", totp_secret: str = "",
     (fresh APP token - trading APIs work, market data may not).  Every TOTP
     generation invalidates the previous token, so only call this when needed.
     Returns (token, source)."""
-    from parallax.adapters.env import env as _env
-    tok = _env("DHAN_ACCESS_TOKEN") or load_saved_token() or ""
+    tok, _src = active_token()
     if tok and not token_is_expired(tok, margin_s=int(min_hours * 3600)):
-        return tok, "still valid"
+        return tok, "still valid (" + _src + ")"
     if tok:
         renewed = renew_token(client_id, tok)
         if renewed and not token_is_expired(renewed, margin_s=0):
@@ -212,8 +238,7 @@ def daily_refresh(client_id: str, pin: str = "", totp_secret: str = "",
     Tries RenewToken first - it extends an ACTIVE token by 24h and keeps the
     token type (SELF stays SELF, which market data needs).  Falls back to the
     normal chain (saved -> TOTP).  Returns (token, source)."""
-    from parallax.adapters.env import env as _env
-    tok = _env("DHAN_ACCESS_TOKEN") or load_saved_token() or ""
+    tok, _src = active_token()
     if tok and not token_is_expired(tok, margin_s=0):
         renewed = renew_token(client_id, tok)
         if renewed and not token_is_expired(renewed, margin_s=0):
