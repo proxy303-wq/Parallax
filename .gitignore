@@ -16,3 +16,4 @@ data/security_id_list.csv
 data/*.part
 # futures_study signal scan cache (7 minutes to rebuild)
 parallax/apps/research/_signals_*.pkl
+options_hold.json

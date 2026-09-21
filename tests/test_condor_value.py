@@ -29,8 +29,11 @@ def _trader(ltps):
     t.last_value = None
     t.last_pnl = 0.0
     t.feed = types.SimpleNamespace(ltp=lambda sid: ltps.get(sid))
+    t.instrument_name = "NIFTY 0DTE"
+    t.hold_to_expiry = False
     t.journal = types.SimpleNamespace(record_trade=lambda *a, **k: None,
-                                      clear_positions=lambda: None)
+                                      clear_positions=lambda: None,
+                                      clear_position=lambda *a: None)
     t.telegram = types.SimpleNamespace(configured=False, send=lambda m: None)
     t._stop_feed = lambda: None
     return t

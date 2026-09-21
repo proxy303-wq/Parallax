@@ -17,8 +17,13 @@ def _trader(record):
         dry_run=True,
         place_option_order=lambda c, side, lots, ot: record.append(
             (c.strike, side)) or types.SimpleNamespace(status="DRY"))
+    t.instrument_name = "NIFTY 0DTE"
+    t.hold_to_expiry = False
+    t._say = lambda m: None
     t.journal = types.SimpleNamespace(set_position=lambda *a: None,
-                                      clear_positions=lambda: None)
+                                      clear_positions=lambda: None,
+                                      clear_position=lambda *a: None,
+                                      record_trade=lambda *a, **k: None)
     t.telegram = types.SimpleNamespace(configured=False, send=lambda m: None)
     t._start_feed = lambda plan: None
     t._stop_feed = lambda: None

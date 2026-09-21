@@ -403,6 +403,14 @@ class LiveRunner:
         # -------- entry: one shot inside the open window --------
         if ot.active is None and self.entered_on != today:
             if now.hour == 9 and 20 <= now.minute <= 40:
+                # never stack a second condor on top of a held positional one
+                held = [p for p in self.store.positions()
+                        if str(p.get("strategy") or "").startswith("options")]
+                if held:
+                    self._say("[0DTE] skip entry - positional condor already open: "
+                              + ", ".join(str(p.get("instrument")) for p in held))
+                    self.entered_on = today
+                    return
                 plan = ot.select()
                 if plan.get("legs"):
                     ot.enter(plan)

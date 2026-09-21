@@ -38,13 +38,16 @@ def _realized_vol(closes):
 
 class ZeroDteCondor:
     def __init__(self, broker=None, lots=8, tp=0.5, sl=2.0, step=50.0,
-                 dry_run=True, tp_mode="ratchet"):
+                 dry_run=True, tp_mode="ratchet", hold_to_expiry=False,
+                 instrument_name="NIFTY 0DTE"):
         self.broker = broker or DhanBroker(dry_run=dry_run)
         self.lots = lots
         self.tp = tp
         self.sl = sl
         self.step = step
         self.tp_mode = tp_mode          # "ratchet" | "fixed"
+        self.hold_to_expiry = hold_to_expiry
+        self.instrument_name = instrument_name
         self.peak_pct = 0.0             # best profit (% of credit) seen this trade
         self.telegram = TelegramBot()
         self.active: dict | None = None
@@ -100,7 +103,7 @@ class ZeroDteCondor:
             return {"reason": f"IV {iv:.1%} <= realised {rv:.1%} - skip"}
         return {"spot": spot, "atm": atm, "credit": round(credit, 2),
                 "iv": round(iv, 4), "realized": round(rv, 4), "legs": legs,
-                "reason": "selected"}
+                "expiry": chain.get("expiry") or "", "reason": "selected"}
 
     # ---- execution --------------------------------------------------------
     #: Buy the hedges before selling the shorts.
@@ -176,8 +179,9 @@ class ZeroDteCondor:
         self.last_pnl = 0.0
         self.peak_pct = 0.0
         self._start_feed(plan)
-        self.journal.set_position("NIFTY 0DTE", "options", "SELL", self.lots,
-                                  plan["credit"], 0.0, 0.0)
+        self.journal.set_position(self.instrument_name,
+                                  "options-hold" if self.hold_to_expiry else "options",
+                                  "SELL", self.lots, plan["credit"], 0.0, 0.0)
         self._say(f"[0DTE] ENTER {self.lots}L condor ATM{plan['atm']:.0f} "
                   f"credit {plan['credit']}pts iv {plan['iv']:.1%} rv {plan['realized']:.1%} "
                   f"[{self.broker.dry_run and 'PAPER' or 'LIVE'}]")
@@ -260,9 +264,33 @@ class ZeroDteCondor:
             return 0.50
         return 0.0
 
+    def expiry_date(self):
+        """The contract expiry as a date, or None."""
+        exp = (self.active or {}).get("plan", {}).get("expiry") or ""
+        try:
+            return datetime.strptime(str(exp)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return None
+
+    def expiry_reached(self, now) -> bool:
+        """True once the contract has stopped trading.
+
+        On expiry day the exit is the 15:15 IST session close; on any later day
+        the position is overdue and is flattened immediately.
+        """
+        d = self.expiry_date()
+        if d is None:
+            return False
+        return now.date() > d or (now.date() == d and (now.hour, now.minute) >= (15, 15))
+
     def manage(self) -> str:
         val = self.value_now()
         if val is None or not self.active:
+            return "hold"
+        if self.hold_to_expiry:
+            # A hedged condor's loss is bounded by the wing width, so there is
+            # no stop to defend: carry the position to the expiry close and
+            # collect the whole credit.  No ratchet, no SL.
             return "hold"
         credit = self.active["plan"]["credit"]
         prof = (credit - val) / credit if credit else 0.0
@@ -295,11 +323,13 @@ class ZeroDteCondor:
             pnl = self.ratchet_floor(self.peak_pct) * plan["credit"] * LOT * self.lots
         elif reason == "sl":
             pnl = -self.sl * plan["credit"] * LOT * self.lots
-        self.journal.record_trade("options", "NIFTY 0DTE", "SELL", self.lots,
+        self.journal.record_trade("options", self.instrument_name, "SELL", self.lots,
                                   plan["credit"], round(self.last_value or 0, 2),
                                   round(pnl, 2), "WIN" if pnl > 0 else "LOSS",
                                   f"condor {reason}")
-        self.journal.clear_positions()
+        # clear only OUR row: clear_positions() is a global DELETE, which would
+        # erase the crypto workers' open positions from the dashboard
+        self.journal.clear_position(self.instrument_name)
         self._stop_feed()
         self._say(f"[0DTE] CLOSE {reason} pnl Rs{pnl:,.0f}")
         self.active = None
