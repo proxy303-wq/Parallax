@@ -61,3 +61,50 @@ def test_all_four_legs_are_sent_exactly_once():
     _trader(rec).enter(_plan())
     assert len(rec) == 4
     assert len({k for k, _s in rec}) == 4
+
+
+def test_rejected_short_unwinds_the_hedges():
+    """No basket API, so a mid-entry rejection must not leave a half position."""
+    rec = []
+    said = []
+    t = _trader(rec)
+    t._say = lambda m: said.append(m)
+
+    class Rej:
+        status = "REJECTED"
+        message = "insufficient margin"
+
+    calls = {"n": 0}
+    orig = t.broker.place_option_order
+
+    def place(c, side, lots, ot):
+        calls["n"] += 1
+        if calls["n"] == 3:               # the first short
+            return Rej()
+        return orig(c, side, lots, ot)
+
+    t.broker.place_option_order = place
+    t.enter(_plan())
+    assert t.active is None                       # never opened
+    assert any("ENTER FAILED" in m for m in said)
+    # both hedges were unwound, so 2 buy + 2 sell-back
+    assert [s for _k, s in rec] == ["BUY", "BUY", "SELL", "SELL"]
+
+
+def test_rejected_hedge_unwinds_nothing_extra():
+    rec = []
+    said = []
+    t = _trader(rec)
+    t._say = lambda m: said.append(m)
+
+    class Rej:
+        status = "REJECTED"
+        message = "no funds"
+
+    def place(c, side, lots, ot):
+        return Rej()
+
+    t.broker.place_option_order = place
+    t.enter(_plan())
+    assert t.active is None
+    assert rec == []                              # nothing went through

@@ -116,19 +116,61 @@ class ZeroDteCondor:
     #: instead of short two naked ones.
     LEG_ORDER = ("put_hedge", "call_hedge", "put_short", "call_short")
 
+    @staticmethod
+    def _leg_ok(ack) -> bool:
+        return str(getattr(ack, "status", "")).split(".")[-1].upper() not in (
+            "REJECTED", "CANCELLED", "EXPIRED")
+
+    def _contract(self, leg):
+        return OptionContract(symbol="NIFTY", strike=leg["strike"], expiry="",
+                              option_type=leg["type"], lot_size=LOT,
+                              security_id=leg["security_id"], trading_symbol="")
+
+    def _unwind(self, placed) -> None:
+        """Reverse the legs already sent, newest first."""
+        for c, side in reversed(placed):
+            try:
+                self.broker.place_option_order(
+                    c, "SELL" if side == "BUY" else "BUY", self.lots, "MARKET")
+            except Exception as e:
+                self._say("[0DTE] UNWIND FAILED " + str(e)[:60])
+
+    def _available_margin(self) -> float:
+        try:
+            return float(getattr(self.broker.get_account(), "available", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
     def enter(self, plan: dict) -> list:
         legs = plan["legs"]
+        avail = self._available_margin()
+        # The Dhan API blocks margin per leg, so the *order* is what earns the
+        # hedge benefit: the long legs must already be in the account before the
+        # shorts are sent.  Report the balance so a margin rejection is obvious.
+        self._say(f"[0DTE] entry {self.lots}L condor, available margin "
+                  f"Rs{avail:,.0f}")
         order = [n for n in self.LEG_ORDER if n in legs]
         order += [n for n in legs if n not in order]
         acks = []
+        placed = []
         for name in order:
             l = legs[name]
             side = "SELL" if name.endswith("short") else "BUY"
-            c = OptionContract(symbol="NIFTY", strike=l["strike"], expiry="",
-                               option_type=l["type"], lot_size=LOT,
-                               security_id=l["security_id"], trading_symbol="")
+            c = self._contract(l)
             ack = self.broker.place_option_order(c, side, self.lots, "MARKET")
             acks.append((name, ack))
+            if not self._leg_ok(ack):
+                # We cannot place a basket through the Dhan API - each leg is a
+                # separate order and margin is blocked per leg (Dhan feature
+                # request, MadeForTrade #59802).  So a rejection mid-entry must
+                # not leave a half-open position; unwind what did go through
+                # and say so loudly instead of looking like "no trade today".
+                self._unwind(placed)
+                self._say(f"[0DTE] ENTER FAILED {name} [{getattr(ack, 'status', '?')}] "
+                          f"{str(getattr(ack, 'message', ''))[:70]} - unwound "
+                          f"{len(placed)} leg(s)")
+                return acks
+            placed.append((c, side))
         self.active = {"plan": plan, "entry_time": datetime.now(timezone.utc)}
         self.last_value = plan["credit"]
         self.last_pnl = 0.0
