@@ -103,6 +103,39 @@ def test_paper_fill_crosses_the_spread():
     assert r._fill_price(ack, bar, Side.SELL) == bar.close - 0.5
 
 
+# ---- no-chase gate --------------------------------------------------------
+
+def test_gate_falls_back_to_the_bar_close_when_no_quote():
+    """get_quote returns 0 for the NIFTY index, which used to disarm the gate."""
+    r = _runner(dry_run=True)
+    r.instrument = "NSE:NIFTY"
+    r.bars = [_bar(datetime.now(IST))]
+    r._broker = lambda: types.SimpleNamespace(
+        get_quote=lambda *a: types.SimpleNamespace(last=0.0, bid=0.0, ask=0.0))
+    # bar close 100.5, signal entry 100.0 -> 0.5% past, must be rejected
+    assert r._price_ok(Side.BUY, 100.0) is False
+    assert r._price_ok(Side.BUY, 100.4) is True
+
+
+def test_gate_allows_when_there_is_no_reference_at_all():
+    r = _runner(dry_run=True)
+    r.instrument = "NSE:NIFTY"
+    r.bars = []
+    r._broker = lambda: types.SimpleNamespace(
+        get_quote=lambda *a: types.SimpleNamespace(last=0.0, bid=0.0, ask=0.0))
+    assert r._price_ok(Side.BUY, 100.0) is True
+
+
+def test_gate_rejects_a_short_that_already_fell_too_far():
+    r = _runner(dry_run=True)
+    r.instrument = "NSE:NIFTY"
+    r.bars = [_bar(datetime.now(IST))]        # close 100.5
+    r._broker = lambda: types.SimpleNamespace(
+        get_quote=lambda *a: types.SimpleNamespace(last=0.0, bid=0.0, ask=0.0))
+    assert r._price_ok(Side.SELL, 101.0) is False   # price below entry - tol
+    assert r._price_ok(Side.SELL, 100.6) is True
+
+
 # ---- end-of-day time stop ------------------------------------------------
 
 def _flat_runner(entry=24000.0, side=Side.BUY, qty=3):

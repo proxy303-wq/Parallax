@@ -31,6 +31,7 @@ from parallax.web.store import JournalStore
 
 IST = timezone(timedelta(hours=5, minutes=30))
 NIFTY_SCrip = "13"
+GATE_TOL = 0.002          # no-chase tolerance, matched to the backtest
 
 # Futures exit policy.  Measured over 2 years of NIFTY 5m
 # (research/futures_study): the breakeven lock at 0.5R is reached by ordinary
@@ -201,18 +202,28 @@ class LiveRunner:
         return None
 
     def _price_ok(self, side: Side, entry: float) -> bool:
-        """Entry-validity gate: do not chase a price that already crossed."""
-        b = self._broker()
+        """Entry-validity gate: do not chase a price that already crossed.
+
+        get_quote() returns nothing for the NIFTY index on this account
+        (verified live: last=0.0 while intraday_minute_data works fine), so the
+        old version fell through to "return True" on every call and the gate
+        was inert - live was not applying the same no-chase rule the backtest
+        measures.  Fall back to the newest completed bar's close, which is the
+        same reference the study gates on.
+        """
+        px = 0.0
         try:
-            q = b.get_quote(str(self.instrument))
-            px = q.last or q.bid or q.ask
+            q = self._broker().get_quote(str(self.instrument))
+            px = q.last or q.bid or q.ask or 0.0
         except Exception:
-            return True
+            px = 0.0
+        if not px and self.bars:
+            px = float(self.bars[-1].close or 0.0)
         if not px:
-            return True
+            return True                      # genuinely no reference available
         if side == Side.BUY:
-            return px <= entry * 1.002      # allow 0.2% tolerance
-        return px >= entry * 0.998
+            return px <= entry * (1 + GATE_TOL)
+        return px >= entry * (1 - GATE_TOL)
 
     # ---- daily briefings -------------------------------------------------
     def _armed_message(self, now) -> str:
