@@ -73,9 +73,12 @@ class ZeroDteCondor:
 
     # ---- selection --------------------------------------------------------
     def select(self, symbol: str = "NIFTY", expiry=None, force: bool = False) -> dict:
-        from parallax.config.schedule import options_active
-        if not options_active(datetime.now(IST)):
-            return {"reason": "not a 0DTE expiry day"}
+        if not force:
+            # force is the explicit override: a positional condor may be opened
+            # on any day, not only on a scheduled 0DTE expiry
+            from parallax.config.schedule import options_active
+            if not options_active(datetime.now(IST)):
+                return {"reason": "not a 0DTE expiry day"}
         chain = fetch_option_chain(symbol, expiry=expiry)
         if not chain:
             return {"reason": "chain unavailable"}
