@@ -221,8 +221,13 @@ class ZeroDteCondor:
             ltp = {n: self.feed.ltp(plan["legs"][n]["security_id"])
                    for n in ("put_short", "call_short", "put_hedge", "call_hedge")}
             if all(v is not None for v in ltp.values()):
-                val = (-(ltp["put_short"] + ltp["call_short"])
-                       + ltp["put_hedge"] + ltp["call_hedge"])
+                # COST TO CLOSE = shorts - hedges.  Buy the shorts back, sell
+                # the hedges.  This was negated, which made a freshly opened
+                # condor read as ~-credit and therefore as +200% profit, and
+                # booked a phantom ~2x the credit into the journal on every
+                # trade.  Same sign error that was found in the backtest study.
+                val = (ltp["put_short"] + ltp["call_short"]
+                       - ltp["put_hedge"] - ltp["call_hedge"])
                 self.last_value = round(val, 2)
                 self.last_pnl = round((plan["credit"] - val) * LOT * self.lots, 2)
                 return self.last_value
@@ -231,13 +236,14 @@ class ZeroDteCondor:
             return None
         rows = {(r["strike"], r["option_type"]): r for r in chain["rows"]}
         val = 0.0
-        for name, sign in (("put_short", -1), ("call_short", -1),
-                           ("put_hedge", 1), ("call_hedge", 1)):
+        for name, sign in (("put_short", 1), ("call_short", 1),
+                           ("put_hedge", -1), ("call_hedge", -1)):
             l = plan["legs"][name]
             r = rows.get((l["strike"], l["type"]))
             if not r:
                 return None
-            px = r["ask"] if sign < 0 else r["bid"]
+            # buy the short back at the ask, sell the hedge at the bid
+            px = r["ask"] if sign > 0 else r["bid"]
             val += sign * px
         self.last_value = round(val, 2)
         self.last_pnl = round((plan["credit"] - val) * LOT * self.lots, 2)
