@@ -103,14 +103,62 @@ def _trade_rows(trades):
     return "<table>" + head + "".join(rows) + "</table>"
 
 
+def _is_live_strategy(strategy) -> bool:
+    """Strategies whose positions row carries a mark and an open P&L.
+
+    They publish their own rupee figure, so the dashboard never has to know a
+    contract's multiplier (NIFTY futures and options are both 65 per lot, crypto
+    is not).
+    """
+    s = str(strategy or "")
+    return "options" in s or s.startswith("futures")
+
+
+def _open_pnl() -> float:
+    return sum(float(p.get("target") or 0.0) for p in store.positions()
+               if _is_live_strategy(p.get("strategy")))
+
+
+def _positions_card():
+    rows = store.positions()
+    if not rows:
+        return _card("Open Positions",
+                     "<p style='color:#8b949e;margin:0'>flat</p>")
+    head = ("<table><tr><th>Instrument</th><th>Strategy</th><th>Side</th>"
+            "<th>Qty</th><th>Entry</th><th>Mark</th><th>Open P&amp;L</th>"
+            "<th>Updated</th></tr>")
+    out = ""
+    for p in rows:
+        strat = str(p.get("strategy") or "")
+        if _is_live_strategy(strat):
+            pnl = float(p.get("target") or 0.0)
+            cls = "pos" if pnl >= 0 else "neg"
+            ptxt = "Rs{:+,.0f}".format(pnl)
+        else:
+            cls, ptxt = "", "-"
+        out += (f"<tr><td>{p.get('instrument')}</td><td>{strat}</td>"
+                f"<td>{p.get('side')}</td><td>{_fmt(p.get('qty'))}</td>"
+                f"<td>{_fmt(p.get('entry'), 2)}</td>"
+                f"<td>{_fmt(p.get('stop'), 2)}</td>"
+                f"<td class='{cls}'>{ptxt}</td>"
+                f"<td>{str(p.get('updated') or '')[11:19]}</td></tr>")
+    return _card("Open Positions", head + out)
+
+
 def _summary_cards(cap, summ):
     total = summ["total_pnl"]
+    op = _open_pnl()
     cls = "pos" if total >= 0 else "neg"
+    ocls = "pos" if op >= 0 else "neg"
+    net = total + op
+    ncls = "pos" if net >= 0 else "neg"
     grid = ("<div class='grid'>"
             + _stat("Equity", "Rs" + _fmt(cap["equity"]))
             + _stat("Available", "Rs" + _fmt(cap["available"]))
             + _stat("Margin Used", "Rs" + _fmt(cap["margin_used"]))
-            + _stat("Total P&L", "Rs{:+,.0f}".format(total), cls)
+            + _stat("Closed P&L", "Rs{:+,.0f}".format(total), cls)
+            + _stat("Open P&L", "Rs{:+,.0f}".format(op), ocls)
+            + _stat("Total P&L", "Rs{:+,.0f}".format(net), ncls)
             + _stat("Trades", str(summ["n_trades"]))
             + "</div>")
     out = _card("Account", grid)
@@ -137,6 +185,11 @@ def _strategy_page(strategy, title, sub):
                  + _stat("Win rate", "{:.0%}".format(wr))
                  + _stat("Trades", str(len(trades)))
                  + "</div>", sub)
+    live = [p for p in store.positions()
+            if _is_live_strategy(p.get("strategy"))
+            and (strategy in str(p.get("strategy") or ""))]
+    if live:
+        body += _positions_card()
     body += _card("Journal", _trade_rows(trades))
     return body
 
@@ -145,6 +198,7 @@ def _strategy_page(strategy, title, sub):
 def home():
     return _page("Home", "home",
                  _summary_cards(store.capital(), store.summary())
+                 + _positions_card()
                  + _card("Trade Journal (recent)", _trade_rows(store.trades(limit=15))))
 
 

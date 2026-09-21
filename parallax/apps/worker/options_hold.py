@@ -112,12 +112,12 @@ def main() -> None:
             val = ot.value_now()
             if val is not None:
                 prof = (credit - val) / credit
-                # the positions table has (entry, stop, target) columns and a
-                # held condor has no stop and no target, so the live mark goes in
-                # "stop" - that is the column the dashboard renders as the current
-                # price - and target stays 0 rather than showing a P&L as a level
+                # the table has only (entry, stop, target).  entry = the credit
+                # taken, stop = the live mark (cost to close), target = the open
+                # P&L in rupees - the dashboard renders these three as
+                # Entry / Mark / Open P&L for strategies that publish a mark.
                 store.set_position(INSTRUMENT, "options-hold", "SELL", LOTS,
-                                   credit, val, 0.0)
+                                   credit, val, ot.last_pnl)
                 if now.date() != last_day:
                     last_day = now.date()
                     _say("[HOLD] %s  value %.2f  profit %+.1f%%  pnl Rs%s"
