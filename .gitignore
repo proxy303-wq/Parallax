@@ -14,3 +14,5 @@ _*.sh
 # Dhan scrip master cache (26 MB, downloaded on demand) - never commit this
 data/security_id_list.csv
 data/*.part
+# futures_study signal scan cache (7 minutes to rebuild)
+parallax/apps/research/_signals_*.pkl
