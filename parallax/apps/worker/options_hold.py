@@ -120,9 +120,14 @@ def main() -> None:
                                    credit, val, ot.last_pnl)
                 if now.date() != last_day:
                     last_day = now.date()
-                    _say("[HOLD] %s  value %.2f  profit %+.1f%%  pnl Rs%s"
-                         % (now.strftime("%a %d %b %H:%M"), val, prof * 100,
-                            format(int(ot.last_pnl), ",")))
+                    # "profit 3.8%" read like a return on capital, which it is
+                    # NOT: it is the fraction of the CREDIT captured.  Say so,
+                    # and print the return on the margin alongside it.
+                    _say("[HOLD] %s  value %.2f  pnl Rs%s  (%.1f%% of the "
+                         "%.2f-pt credit, %.1f%% of the Rs%s margin)"
+                         % (now.strftime("%a %d %b %H:%M"), val,
+                            format(int(ot.last_pnl), ","), prof * 100, credit,
+                            100.0 * ot.last_pnl / maxl, format(int(maxl), ",")))
             if ot.expiry_reached(now):
                 _say("[HOLD] expiry reached - closing")
                 ot.close("expiry")
