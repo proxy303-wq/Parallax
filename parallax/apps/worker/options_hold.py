@@ -211,30 +211,37 @@ def main() -> None:
         ot._start_feed(st["plan"])
         _say("[HOLD] restored position, expiry " + str(st["plan"].get("expiry")))
     elif enter_now:
-        # The schedule decides which index is due today.  A worker for an index
-        # that is not on today's plan idles rather than trading (last Tuesday is
-        # BANKNIFTY only; last Thursday is SENSEX + BANKEX; plain Tuesdays are
-        # NIFTY; plain Thursdays are SENSEX).
-        today_plan = _plan(datetime.now(IST))
-        if index not in today_plan:
-            _say("[%s] not on today's plan %s - idling" % (index, today_plan))
-            _idle()
-            return
+        # Wait for a day this index is due, then for the entry window.  Both
+        # checks have to live in the loop: a worker that idled once and never
+        # looked again would sleep straight through its own expiry day.
+        #
+        #   last Tuesday  -> BANKNIFTY only (NIFTY and FINNIFTY skipped)
+        #   last Thursday -> SENSEX + BANKEX
+        #   other Tue/Thu -> NIFTY / SENSEX
+        hh = mm = None
         if enter_at:
-            # Wait for the requested clock time.  The window matters: after the
-            # session closes the service restarts with no state, so a bare
-            # "now >= enter_at" test would fire a fresh condor at 15:20 into a
-            # closed market.  Only within 30 minutes of the target does it
-            # enter; otherwise it waits for the next occurrence.
-            _say("[HOLD] armed, entering at %s IST (%d lots, width %d)"
-                 % (enter_at, lots, width))
             hh, mm = int(enter_at[:2]), int(enter_at[3:5])
-            while True:
-                now = datetime.now(IST)
+        last_state = None
+        while True:
+            now = datetime.now(IST)
+            plan = _plan(now)
+            due = index in plan
+            in_window = True
+            if due and hh is not None:
                 target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-                if target <= now <= target + timedelta(minutes=30):
-                    break
-                time.sleep(5)
+                in_window = target <= now <= target + timedelta(minutes=30)
+            state = (due, in_window)
+            if state != last_state:
+                last_state = state
+                if not due:
+                    _say("[%s] not on today's plan %s - waiting"
+                         % (index, plan if plan else "futures day"))
+                else:
+                    _say("[%s] due today, entering at %s IST (%d lots, width %d)"
+                         % (index, enter_at or "now", lots, width))
+            if due and in_window:
+                break
+            time.sleep(60)
         plan = ot.select(force=True, width=width)   # force: any day will do
         if not plan.get("legs"):
             _say("[HOLD] cannot enter: " + str(plan.get("reason")))
