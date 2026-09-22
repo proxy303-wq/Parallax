@@ -18,3 +18,4 @@ data/*.part
 parallax/apps/research/_signals_*.pkl
 options_hold.json
 _idxres_*.txt
+parallax/apps/research/_ladder_*.pkl

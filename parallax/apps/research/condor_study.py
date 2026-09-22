@@ -78,7 +78,20 @@ def windows(start: datetime.date, end: datetime.date, days: int = 27):
 
 def load_ladder(symbol: str, start: str, end: str, progress=print):
     """{ts: {spot, CALL:{offset: (close, high, low)}, PUT:{...}}}"""
+    import os
+    import pickle
     idx = index_spec(symbol)
+    # The fetch is ~780 calls and 40 minutes.  Cache it, or every correction
+    # costs another 40 minutes and corrections never get made.
+    cache = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "_ladder_%s_%s_%s.pkl" % (symbol, start, end))
+    try:
+        with open(cache, "rb") as fh:
+            d = pickle.load(fh)
+        progress("  loaded %d bars from cache" % len(d))
+        return idx, d
+    except (OSError, ValueError, pickle.UnpicklingError):
+        pass
     tok, _ = active_token()
     step = float(idx.step)
     offs = ["ATM"] + ["ATM%+d" % j for j in range(-MAX_OFF, MAX_OFF + 1) if j != 0]
@@ -107,7 +120,18 @@ def load_ladder(symbol: str, start: str, end: str, progress=print):
             series += 1
         if series % 6 == 0:
             progress("  %s series %d/%d, %d bars" % (symbol, series, len(offs) * 2, len(byts)))
+    try:
+        with open(cache, "wb") as fh:
+            pickle.dump(byts, fh)
+    except OSError:
+        pass
     return idx, byts
+
+
+def _floor(peak: float) -> float:
+    """The locked-in ratchet floor for a given peak profit (fraction of credit)."""
+    return (0.90 if peak >= 0.95 else 0.75 if peak >= 0.80
+            else 0.50 if peak >= 0.50 else 0.0)
 
 
 def _legs(atm, step, width=2):
@@ -165,38 +189,30 @@ def simulate(idx, byts, sl=2.0, cost_pct=0.0, intrabar=True, width=2, lots=5):
             if val is None:
                 misses += 1
                 continue
-            prof = (credit - val) / credit
-            last = prof
-            peak = max(peak, prof)
-            worst = val
-            best = val
+            last = (credit - val) / credit
+
+            # EXITS FIRST, against the floor armed by EARLIER bars.  The first
+            # version of this armed the peak from the bar's own favourable
+            # extreme and triggered from the same bar's adverse extreme, which
+            # fired the 90% floor on bar two of every trade - 83 trades, 83
+            # winners, minimum +Rs 2,014, t=+16.9.  You cannot learn the peak
+            # and act on it inside the same bar.
+            adverse = val
             if intrabar:
                 w = _value(row, legs, at, step, adverse=True)
                 if w is not None:
-                    worst = max(val, w)
-                # favourable extreme: shorts low, hedges high
-                fav = 0.0
-                ok = True
-                for name, k, ot, sgn in legs:
-                    off = k - at
-                    t = row[ot].get(off)
-                    if t is None:
-                        ok = False
-                        break
-                    fav += (t[2] if sgn > 0 else -t[1])
-                if ok:
-                    best = min(val, fav)
-            prof_worst = (credit - worst) / credit
-            prof_best = (credit - best) / credit
-            peak = max(peak, prof_best)
+                    adverse = max(val, w)
+            prof_worst = (credit - adverse) / credit
+            floor = _floor(peak)
             if prof_worst <= -sl:
                 outcome, pct = "sl", -sl
                 break
-            fl = (0.90 if peak >= 0.95 else 0.75 if peak >= 0.80
-                  else 0.50 if peak >= 0.50 else 0.0)
-            if fl > 0 and prof_worst <= fl:
-                outcome, pct = "ratchet", fl
+            if floor > 0 and prof_worst <= floor:
+                outcome, pct = "ratchet", floor
                 break
+
+            # only now may the peak grow, and only from the close
+            peak = max(peak, last)
         if pct is None:
             pct = last if last is not None else 0.0
         gross = pct * credit * idx.lot * lots
