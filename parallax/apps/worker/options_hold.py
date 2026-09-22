@@ -182,10 +182,19 @@ def main() -> None:
     enter_at = arg("--enter-at", None)
     store = JournalStore()
     dry = store.mode() != "live"
+    st = load_state()
+    if st and st.get("plan"):
+        # The POSITION's size beats the CLI default.  Restoring an 8-lot
+        # position into a worker started with the new 5-lot default marked it
+        # and reported its P&L at 5 lots - a 37% understatement of the truth.
+        if st.get("lots"):
+            lots = int(st["lots"])
+            LOTS = lots
+            _say("[HOLD] restoring %d lots from %s" % (lots, STATE))
+
     ot = ZeroDteCondor(broker=DhanBroker(dry_run=dry), lots=lots,
                        hold_to_expiry=True, instrument_name=INSTRUMENT)
 
-    st = load_state()
     if st and st.get("plan"):
         ot.active = {"plan": st["plan"], "entry_time": datetime.now(timezone.utc)}
         ot.last_value = st["plan"]["credit"]
