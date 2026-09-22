@@ -43,22 +43,32 @@ def _say(msg: str) -> None:
         pass
 
 
-def load_state():
+def arg(flag: str, default):
+    """--flag value from argv, else default."""
+    if flag in sys.argv:
+        i = sys.argv.index(flag)
+        if i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    return default
+
+
+def load_state(path: str | None = None):
     try:
-        with open(STATE, encoding="utf-8") as fh:
+        with open(path or STATE, encoding="utf-8") as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return None
 
 
-def save_state(plan: dict) -> None:
-    with open(STATE, "w", encoding="utf-8") as fh:
-        json.dump({"plan": plan, "opened": datetime.now(timezone.utc).isoformat()}, fh)
+def save_state(plan: dict, path: str | None = None) -> None:
+    with open(path or STATE, "w", encoding="utf-8") as fh:
+        json.dump({"plan": plan, "lots": LOTS,
+                   "opened": datetime.now(timezone.utc).isoformat()}, fh)
 
 
-def clear_state() -> None:
+def clear_state(path: str | None = None) -> None:
     try:
-        os.remove(STATE)
+        os.remove(path or STATE)
     except OSError:
         pass
 
@@ -67,10 +77,17 @@ def main() -> None:
     from parallax.apps.worker.dhan_options_live import ZeroDteCondor
     from parallax.web.store import JournalStore
 
+    global LOTS, STATE, INSTRUMENT, POLL
     enter_now = "--enter" in sys.argv
+    lots = int(arg("--lots", LOTS))
+    width = int(arg("--width", 2))
+    STATE = arg("--state", STATE)
+    INSTRUMENT = arg("--instrument", INSTRUMENT)
+    POLL = int(arg("--poll", POLL))
+    enter_at = arg("--enter-at", None)
     store = JournalStore()
     dry = store.mode() != "live"
-    ot = ZeroDteCondor(broker=DhanBroker(dry_run=dry), lots=LOTS,
+    ot = ZeroDteCondor(broker=DhanBroker(dry_run=dry), lots=lots,
                        hold_to_expiry=True, instrument_name=INSTRUMENT)
 
     st = load_state()
@@ -81,12 +98,20 @@ def main() -> None:
         ot._start_feed(st["plan"])
         _say("[HOLD] restored position, expiry " + str(st["plan"].get("expiry")))
     elif enter_now:
-        plan = ot.select(force=True)      # force: today is not an expiry day
+        if enter_at:
+            # wait for the requested clock time before pricing the trade
+            _say("[HOLD] armed, entering at %s IST (%d lots, width %d)"
+                 % (enter_at, lots, width))
+            while True:
+                if datetime.now(IST).strftime("%H:%M") >= enter_at:
+                    break
+                time.sleep(5)
+        plan = ot.select(force=True, width=width)   # force: any day will do
         if not plan.get("legs"):
             _say("[HOLD] cannot enter: " + str(plan.get("reason")))
             return
         _say("[HOLD] entering %dL condor ATM%.0f credit %.2fpts iv %.1f%% rv %.1f%% expiry %s [%s]"
-             % (LOTS, plan["atm"], plan["credit"], plan["iv"] * 100,
+             % (lots, plan["atm"], plan["credit"], plan["iv"] * 100,
                 plan["realized"] * 100, plan.get("expiry"),
                 "PAPER" if dry else "LIVE"))
         ot.enter(plan)
@@ -100,10 +125,10 @@ def main() -> None:
 
     credit = ot.active["plan"]["credit"]
     exp = ot.active["plan"].get("expiry")
-    maxp = credit * 65 * LOTS
-    maxl = (100 - credit) * 65 * LOTS
+    maxp = credit * 65 * lots
+    maxl = (100 - credit) * 65 * lots
     _say("[HOLD] %d lots  credit %.2f pts  max profit Rs%s  max loss Rs%s  expiry %s"
-         % (LOTS, credit, format(int(maxp), ","), format(int(maxl), ","), exp))
+         % (lots, credit, format(int(maxp), ","), format(int(maxl), ","), exp))
 
     last_day = None
     while True:
@@ -116,7 +141,7 @@ def main() -> None:
                 # taken, stop = the live mark (cost to close), target = the open
                 # P&L in rupees - the dashboard renders these three as
                 # Entry / Mark / Open P&L for strategies that publish a mark.
-                store.set_position(INSTRUMENT, "options-hold", "SELL", LOTS,
+                store.set_position(INSTRUMENT, "options-hold", "SELL", lots,
                                    credit, val, ot.last_pnl)
                 if now.date() != last_day:
                     last_day = now.date()

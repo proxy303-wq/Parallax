@@ -72,7 +72,14 @@ class ZeroDteCondor:
             return []
 
     # ---- selection --------------------------------------------------------
-    def select(self, symbol: str = "NIFTY", expiry=None, force: bool = False) -> dict:
+    def select(self, symbol: str = "NIFTY", expiry=None, force: bool = False,
+               width: int = 2) -> dict:
+        """width = how many strikes out the shorts sit.
+
+        width 2 is the production shape: shorts ATM +- 100, hedges ATM +- 200.
+        width 1 gives shorts ATM +- 50 and hedges ATM +- 150 - a tighter condor
+        on strikes that do not collide with a width-2 position in the same book.
+        """
         if not force:
             # force is the explicit override: a positional condor may be opened
             # on any day, not only on a scheduled 0DTE expiry
@@ -85,10 +92,11 @@ class ZeroDteCondor:
         spot = chain["spot"]
         atm = round(spot / self.step) * self.step
         rows = {(r["strike"], r["option_type"]): r for r in chain["rows"]}
-        spec = {"put_short": (atm - 2 * self.step, "PE"),
-                "call_short": (atm + 2 * self.step, "CE"),
-                "put_hedge": (atm - 4 * self.step, "PE"),
-                "call_hedge": (atm + 4 * self.step, "CE")}
+        w = max(1, int(width))
+        spec = {"put_short": (atm - w * self.step, "PE"),
+                "call_short": (atm + w * self.step, "CE"),
+                "put_hedge": (atm - (w + 2) * self.step, "PE"),
+                "call_hedge": (atm + (w + 2) * self.step, "CE")}
         legs = {}
         for name, (k, ot) in spec.items():
             r = rows.get((k, ot))
@@ -106,7 +114,8 @@ class ZeroDteCondor:
             return {"reason": f"IV {iv:.1%} <= realised {rv:.1%} - skip"}
         return {"spot": spot, "atm": atm, "credit": round(credit, 2),
                 "iv": round(iv, 4), "realized": round(rv, 4), "legs": legs,
-                "expiry": chain.get("expiry") or "", "reason": "selected"}
+                "width": w, "expiry": chain.get("expiry") or "",
+                "reason": "selected"}
 
     # ---- execution --------------------------------------------------------
     #: Buy the hedges before selling the shorts.
