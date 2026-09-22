@@ -174,6 +174,7 @@ def main() -> None:
     global LOTS, STATE, INSTRUMENT, POLL
     enter_now = "--enter" in sys.argv
     lots = int(arg("--lots", LOTS))
+    LOTS = lots                     # save_state() records the global
     width = int(arg("--width", 2))
     STATE = arg("--state", STATE)
     INSTRUMENT = arg("--instrument", INSTRUMENT)
