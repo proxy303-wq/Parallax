@@ -189,6 +189,9 @@ def main() -> None:
         return
 
     credit = ot.active["plan"]["credit"]
+    if not credit or credit <= 0:
+        _say("[HOLD] refusing to manage a position with a non-positive credit")
+        return
     exp = ot.active["plan"].get("expiry")
     maxp = credit * 65 * lots
     maxl = (100 - credit) * 65 * lots

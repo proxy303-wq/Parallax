@@ -102,11 +102,18 @@ class ZeroDteCondor:
             r = rows.get((k, ot))
             if not r:
                 return {"reason": f"missing leg {k} {ot}"}
+            if not (r["bid"] or 0) and not (r["ask"] or 0):
+                # Dhan serves zero bid/ask outside the session; entering on that
+                # builds a condor at a fictional price (this actually happened
+                # in a pre-open rehearsal: credit 0.00, then a divide-by-zero)
+                return {"reason": f"no quotes yet for {k} {ot} (bid/ask are 0)"}
             legs[name] = {"strike": k, "type": ot, "bid": r["bid"], "ask": r["ask"],
                           "iv": r["iv"], "ltp": r["ltp"],
                           "security_id": r["security_id"]}
         credit = (legs["put_short"]["bid"] + legs["call_short"]["bid"]
                   - legs["put_hedge"]["ask"] - legs["call_hedge"]["ask"])
+        if credit <= 0:
+            return {"reason": f"non-positive credit {credit:.2f} - refusing"}
         iv = statistics.mean([legs["put_short"]["iv"], legs["call_short"]["iv"]])
         closes = self.daily_closes()
         rv = _realized_vol(closes[-21:]) if closes else 0.0
