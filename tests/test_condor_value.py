@@ -25,6 +25,11 @@ def _plan():
 def _trader(ltps):
     t = object.__new__(ZeroDteCondor)
     t.lots = 8
+    t.symbol = "NIFTY"
+    t.lot = LOT
+    t.segment = "NSE_FNO"
+    t.underlying_id = 13
+    t.step = 50.0
     t.active = {"plan": _plan(), "entry_time": None}
     t.last_value = None
     t.last_pnl = 0.0

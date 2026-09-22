@@ -39,7 +39,7 @@ def _realized_vol(closes):
 class ZeroDteCondor:
     def __init__(self, broker=None, lots=8, tp=0.5, sl=2.0, step=50.0,
                  dry_run=True, tp_mode="ratchet", hold_to_expiry=False,
-                 instrument_name="NIFTY 0DTE"):
+                 instrument_name=None, index="NIFTY"):
         self.broker = broker or DhanBroker(dry_run=dry_run)
         self.lots = lots
         self.tp = tp
@@ -47,7 +47,16 @@ class ZeroDteCondor:
         self.step = step
         self.tp_mode = tp_mode          # "ratchet" | "fixed"
         self.hold_to_expiry = hold_to_expiry
-        self.instrument_name = instrument_name
+        # Per-index contract facts.  Everything below reads from the spec, so the
+        # same class trades NIFTY, BANKNIFTY, SENSEX or BANKEX.
+        from parallax.config.indices import spec as _spec
+        self.index = _spec(index)
+        self.symbol = self.index.symbol
+        self.lot = self.index.lot
+        self.segment = self.index.exchange_segment
+        self.underlying_id = self.index.underlying_id
+        self.step = float(self.index.step)
+        self.instrument_name = instrument_name or ("%s 0DTE" % self.symbol)
         self.peak_pct = 0.0             # best profit (% of credit) seen this trade
         self.telegram = TelegramBot()
         self.active: dict | None = None
@@ -64,7 +73,7 @@ class ZeroDteCondor:
             api = self.broker._api_client()
             to_d = date.today()
             from_d = to_d - timedelta(days=days * 2)
-            res = api.historical_daily_data(NIFTY_SCRIP, "IDX_I", "INDEX",
+            res = api.historical_daily_data(str(self.underlying_id), "IDX_I", "INDEX",
                                             from_d.isoformat(), to_d.isoformat())
             d = (res or {}).get("data") or {}
             return [float(c) for c in (d.get("close") or [])]
@@ -72,7 +81,7 @@ class ZeroDteCondor:
             return []
 
     # ---- selection --------------------------------------------------------
-    def select(self, symbol: str = "NIFTY", expiry=None, force: bool = False,
+    def select(self, symbol=None, expiry=None, force: bool = False,
                width: int = 2) -> dict:
         """width = how many strikes out the shorts sit.
 
@@ -86,7 +95,7 @@ class ZeroDteCondor:
             from parallax.config.schedule import options_active
             if not options_active(datetime.now(IST)):
                 return {"reason": "not a 0DTE expiry day"}
-        chain = fetch_option_chain(symbol, expiry=expiry)
+        chain = fetch_option_chain(symbol or self.symbol, expiry=expiry)
         if not chain:
             return {"reason": "chain unavailable"}
         spot = chain["spot"]
@@ -144,8 +153,8 @@ class ZeroDteCondor:
             "REJECTED", "CANCELLED", "EXPIRED")
 
     def _contract(self, leg):
-        return OptionContract(symbol="NIFTY", strike=leg["strike"], expiry="",
-                              option_type=leg["type"], lot_size=LOT,
+        return OptionContract(symbol=self.symbol, strike=leg["strike"], expiry="",
+                              option_type=leg["type"], lot_size=self.lot,
                               security_id=leg["security_id"], trading_symbol="")
 
     def _unwind(self, placed) -> None:
@@ -252,9 +261,9 @@ class ZeroDteCondor:
                 val = (ltp["put_short"] + ltp["call_short"]
                        - ltp["put_hedge"] - ltp["call_hedge"])
                 self.last_value = round(val, 2)
-                self.last_pnl = round((plan["credit"] - val) * LOT * self.lots, 2)
+                self.last_pnl = round((plan["credit"] - val) * self.lot * self.lots, 2)
                 return self.last_value
-        chain = fetch_option_chain("NIFTY")
+        chain = fetch_option_chain(self.symbol)
         if not chain:
             return None
         rows = {(r["strike"], r["option_type"]): r for r in chain["rows"]}
@@ -269,7 +278,7 @@ class ZeroDteCondor:
             px = r["ask"] if sign > 0 else r["bid"]
             val += sign * px
         self.last_value = round(val, 2)
-        self.last_pnl = round((plan["credit"] - val) * LOT * self.lots, 2)
+        self.last_pnl = round((plan["credit"] - val) * self.lot * self.lots, 2)
         return self.last_value
 
     @staticmethod
@@ -331,17 +340,17 @@ class ZeroDteCondor:
         plan = self.active["plan"]
         for name, l in plan["legs"].items():
             side = "BUY" if name.endswith("short") else "SELL"
-            c = OptionContract(symbol="NIFTY", strike=l["strike"], expiry="",
-                               option_type=l["type"], lot_size=LOT,
+            c = OptionContract(symbol=self.symbol, strike=l["strike"], expiry="",
+                               option_type=l["type"], lot_size=self.lot,
                                security_id=l["security_id"], trading_symbol="")
             self.broker.place_option_order(c, side, self.lots, "MARKET")
-        pnl = self.last_pnl if self.last_pnl else plan["credit"] * LOT * self.lots
+        pnl = self.last_pnl if self.last_pnl else plan["credit"] * self.lot * self.lots
         if reason == "tp":
-            pnl = self.tp * plan["credit"] * LOT * self.lots
+            pnl = self.tp * plan["credit"] * self.lot * self.lots
         elif reason == "ratchet":
-            pnl = self.ratchet_floor(self.peak_pct) * plan["credit"] * LOT * self.lots
+            pnl = self.ratchet_floor(self.peak_pct) * plan["credit"] * self.lot * self.lots
         elif reason == "sl":
-            pnl = -self.sl * plan["credit"] * LOT * self.lots
+            pnl = -self.sl * plan["credit"] * self.lot * self.lots
         self.journal.record_trade("options", self.instrument_name, "SELL", self.lots,
                                   plan["credit"], round(self.last_value or 0, 2),
                                   round(pnl, 2), "WIN" if pnl > 0 else "LOSS",

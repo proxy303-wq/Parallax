@@ -47,6 +47,12 @@ def _say(msg: str) -> None:
         pass
 
 
+def _idle() -> None:
+    """Stay alive without touching the API, so systemd does not restart-loop."""
+    while True:
+        time.sleep(300)
+
+
 def arg(flag: str, default):
     """--flag value from argv, else default."""
     if flag in sys.argv:
@@ -172,12 +178,14 @@ def main() -> None:
     from parallax.web.store import JournalStore
 
     global LOTS, STATE, INSTRUMENT, POLL
+    from parallax.config.schedule import options_plan as _plan
     enter_now = "--enter" in sys.argv
     lots = int(arg("--lots", LOTS))
     LOTS = lots                     # save_state() records the global
     width = int(arg("--width", 2))
-    STATE = arg("--state", STATE)
-    INSTRUMENT = arg("--instrument", INSTRUMENT)
+    index = str(arg("--index", "NIFTY")).upper()
+    STATE = arg("--state", os.path.join(REPO, "options_hold_%s.json" % index))
+    INSTRUMENT = arg("--instrument", "%s 0DTE" % index)
     POLL = int(arg("--poll", POLL))
     enter_at = arg("--enter-at", None)
     store = JournalStore()
@@ -193,7 +201,8 @@ def main() -> None:
             _say("[HOLD] restoring %d lots from %s" % (lots, STATE))
 
     ot = ZeroDteCondor(broker=DhanBroker(dry_run=dry), lots=lots,
-                       hold_to_expiry=True, instrument_name=INSTRUMENT)
+                       hold_to_expiry=True, instrument_name=INSTRUMENT,
+                       index=index)
 
     if st and st.get("plan"):
         ot.active = {"plan": st["plan"], "entry_time": datetime.now(timezone.utc)}
@@ -202,6 +211,15 @@ def main() -> None:
         ot._start_feed(st["plan"])
         _say("[HOLD] restored position, expiry " + str(st["plan"].get("expiry")))
     elif enter_now:
+        # The schedule decides which index is due today.  A worker for an index
+        # that is not on today's plan idles rather than trading (last Tuesday is
+        # BANKNIFTY only; last Thursday is SENSEX + BANKEX; plain Tuesdays are
+        # NIFTY; plain Thursdays are SENSEX).
+        today_plan = _plan(datetime.now(IST))
+        if index not in today_plan:
+            _say("[%s] not on today's plan %s - idling" % (index, today_plan))
+            _idle()
+            return
         if enter_at:
             # Wait for the requested clock time.  The window matters: after the
             # session closes the service restarts with no state, so a bare

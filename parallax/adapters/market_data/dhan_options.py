@@ -25,7 +25,10 @@ BASE = "https://api.dhan.co/v2"
 IDX_SEGMENT = "IDX_I"
 DEFAULT_SCRIP_MASTER = r"C:\PrOxyTradingTerminal\reports\security_id_list.csv"
 
-UNDERLYING_IDS = {"NIFTY": 13, "BANKNIFTY": 25, "FINNIFTY": 27, "SENSEX": 51}
+#: Dhan underlying scrip ids for the index option chains.  SENSEX 51 and
+#: BANKEX 69 were confirmed by the spot each returned (74,529 and 63,529).
+UNDERLYING_IDS = {"NIFTY": 13, "BANKNIFTY": 25, "FINNIFTY": 27,
+                  "SENSEX": 51, "BANKEX": 69}
 
 
 def underlying_id(symbol: str) -> int:

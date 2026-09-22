@@ -13,6 +13,11 @@ from parallax.apps.worker.dhan_options_live import ZeroDteCondor
 def _trader(record):
     t = object.__new__(ZeroDteCondor)
     t.lots = 8
+    t.symbol = "NIFTY"
+    t.lot = 65
+    t.segment = "NSE_FNO"
+    t.underlying_id = 13
+    t.step = 50.0
     t.broker = types.SimpleNamespace(
         dry_run=True,
         place_option_order=lambda c, side, lots, ot: record.append(
