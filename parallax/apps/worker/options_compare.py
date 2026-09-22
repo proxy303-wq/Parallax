@@ -35,6 +35,11 @@ def main() -> None:
     ch = fetch_option_chain("NIFTY")
     rows = ({(r["strike"], r["option_type"]): r for r in ch["rows"]}
             if ch else {})
+    quoting = any((r.get("bid") or 0) or (r.get("ask") or 0) for r in rows.values())
+    if not quoting:
+        print("chain is NOT quoting (bid/ask all zero - outside the session).")
+        print("Marks would read as the full credit, so nothing is printed.")
+        return
     print("live chain: spot %.1f expiry %s rows %d" % (
         ch["spot"] if ch else 0, ch.get("expiry") if ch else "-", len(rows)))
     print()
