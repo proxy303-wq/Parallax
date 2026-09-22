@@ -73,6 +73,70 @@ def clear_state(path: str | None = None) -> None:
         pass
 
 
+def funds_report(ot, plan: dict, lots: int, dry: bool) -> None:
+    """Exactly what this order needs, leg by leg, at the live prices.
+
+    Dhan's margin calculator prices ONE leg and returns the NAKED figure, so it
+    cannot answer what the basket costs.  It can, however, answer the two things
+    that matter: how much cash the hedges take out, how much the shorts bring
+    in, and what the two shorts would need if the hedge benefit is NOT applied.
+    """
+    UNITS = lots * 65
+    api = None
+    try:
+        api = ot.broker._api_client()
+    except Exception:
+        api = None
+    prem_out = prem_in = naked = 0.0
+    _say("[FUNDS] leg-by-leg at live prices, %d lots (%d units each):" % (lots, UNITS))
+    for name, l in plan["legs"].items():
+        side = "SELL" if name.endswith("short") else "BUY"
+        px = l["bid"] if side == "SELL" else l["ask"]
+        cash = px * UNITS
+        m = None
+        if api is not None:
+            try:
+                res = api.margin_calculator(str(l["security_id"]), "NSE_FNO", side,
+                                            int(UNITS), "INTRADAY", float(px), 0)
+                d = (res or {}).get("data") or res or {}
+                m = float(d.get("totalMargin") or 0.0)
+            except Exception:
+                m = None
+        if side == "SELL":
+            prem_in += cash
+            if m:
+                naked += m
+        else:
+            prem_out += cash
+        _say("   %-11s %-4s %6.0f %-4s px %7.2f  cash %s Rs%-9s margin Rs%s" % (
+            name, l["type"], l["strike"], side, px,
+            "in " if side == "SELL" else "out", format(int(cash), ","),
+            format(int(m), ",") if m is not None else "n/a"))
+    credit = plan["credit"]
+    ceiling = (100 - credit) * 65 * lots
+    avail = 0.0
+    try:
+        avail = float(getattr(ot.broker.get_account(), "available", 0.0) or 0.0)
+    except Exception:
+        pass
+    _say("[FUNDS] hedge premium out      Rs%s" % format(int(prem_out), ","))
+    _say("[FUNDS] short premium in       Rs%s" % format(int(prem_in), ","))
+    _say("[FUNDS] net credit received    Rs%s" % format(int(prem_in - prem_out), ","))
+    _say("[FUNDS] peak cash needed       Rs%s  (the hedges go on first)" % (
+        format(int(prem_out), ",")))
+    _say("[FUNDS] margin if hedged       Rs%s   <- defined-risk ceiling" % (
+        format(int(ceiling), ",")))
+    _say("[FUNDS] margin if NOT hedged   Rs%s   <- two naked shorts" % (
+        format(int(naked), ",")))
+    _say("[FUNDS] account available      Rs%s%s" % (
+        format(int(avail), ","),
+        "   [PAPER: no margin is enforced, so this will proceed regardless]"
+        if dry else ""))
+    if not dry and avail and avail < prem_out:
+        _say("[FUNDS] INSUFFICIENT for the hedges - need Rs%s" % (
+            format(int(prem_out - avail), ",")))
+
+
 def main() -> None:
     from parallax.apps.worker.dhan_options_live import ZeroDteCondor
     from parallax.web.store import JournalStore
@@ -114,6 +178,7 @@ def main() -> None:
              % (lots, plan["atm"], plan["credit"], plan["iv"] * 100,
                 plan["realized"] * 100, plan.get("expiry"),
                 "PAPER" if dry else "LIVE"))
+        funds_report(ot, plan, lots, dry)
         ot.enter(plan)
         if ot.active is None:
             _say("[HOLD] entry failed - see the acks above")
