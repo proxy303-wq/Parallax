@@ -303,6 +303,42 @@ class DhanBroker(BrokerAdapter):
                         message="submitted")
 
     # ---- index-options support -----------------------------------------
+    def basket_margin(self, legs: list) -> dict:
+        """EXACT margin for a multi-leg basket, from Dhan's multi calculator.
+
+        leg = {security_id, transaction_type, quantity, price} plus optional
+        exchange_segment / product_type.
+
+        This is the only endpoint that prices a hedged basket.  The single-leg
+        /margincalculator returns the NAKED requirement, which for a 15-lot
+        NIFTY condor is ~Rs 39 lakh against a real Rs 19.4 lakh - a factor of
+        two, and the difference between "fits an 8L account" and "does not".
+
+        The response splits the requirement, and the split is the point:
+
+            spanMargin    <- the hedge benefit lands here (Rs 97,880 vs
+                             Rs 20.9 lakh naked, a ~200x reduction)
+            exposure      <- NOT netted at all; identical with or without the
+                             long legs, and ~94% of the total
+            hedgeBenefit  <- reported separately, 0.0 on this account
+        """
+        payload = {
+            "dhanClientId": self.client_id,
+            "scripList": [{
+                "securityId": str(l["security_id"]),
+                "exchangeSegment": l.get("exchange_segment", self.exchange_segment),
+                "transactionType": str(l["transaction_type"]).upper(),
+                "quantity": int(l["quantity"]),
+                "productType": l.get("product_type", self.product_type),
+                "price": float(l["price"]),
+            } for l in legs],
+        }
+        try:
+            return self._api_client().dhan_http.post(
+                "/margincalculator/multi", payload) or {}
+        except Exception as e:
+            return {"error": str(e)[:160]}
+
     def option_margin(self, contract, side: str, qty_lots: int, price: float) -> float:
         """Dhan margin for one option leg (sell = SPAN+exposure, buy = premium).
         contract: OptionContract.  Returns total margin in INR."""

@@ -28,7 +28,11 @@ from parallax.apps.worker.live_runner import IST
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
 STATE = os.path.join(REPO, "options_hold.json")
-LOTS = 8
+#: Funded size.  Dhan's multi-leg calculator puts a 15-lot NIFTY condor at
+#: Rs 19,41,121 and an 8-lot at Rs 10,35,264; on Rs 8L the ceiling is 6 lots
+#: (Rs 7,76,448), so 5 leaves a margin buffer.  Exposure margin - ~94% of the
+#: requirement - is NOT netted by the hedge, which is why these are so large.
+LOTS = 5
 POLL = 15
 INSTRUMENT = "NIFTY 0DTE HOLD"     # distinct row, so it never collides with the runner
 
@@ -124,10 +128,36 @@ def funds_report(ot, plan: dict, lots: int, dry: bool) -> None:
     _say("[FUNDS] net credit received    Rs%s" % format(int(prem_in - prem_out), ","))
     _say("[FUNDS] peak cash needed       Rs%s  (the hedges go on first)" % (
         format(int(prem_out), ",")))
-    _say("[FUNDS] margin if hedged       Rs%s   <- defined-risk ceiling" % (
+    _say("[FUNDS] defined-risk ceiling   Rs%s   <- max LOSS, not margin" % (
         format(int(ceiling), ",")))
-    _say("[FUNDS] margin if NOT hedged   Rs%s   <- two naked shorts" % (
+    _say("[FUNDS] two naked shorts       Rs%s   <- single-leg calculator" % (
         format(int(naked), ",")))
+    # The real number: Dhan's multi-leg calculator prices the whole basket.
+    basket = []
+    for name, l in plan["legs"].items():
+        basket.append({
+            "security_id": l["security_id"],
+            "transaction_type": "SELL" if name.endswith("short") else "BUY",
+            "quantity": UNITS,
+            "price": l["bid"] if name.endswith("short") else l["ask"],
+        })
+    try:
+        m = ot.broker.basket_margin(basket)
+    except Exception as e:
+        m = {"error": str(e)[:120]}
+    if m.get("totalMargin") is not None:
+        _say("[FUNDS] ACTUAL basket margin   Rs%s   <- what Dhan blocks" % (
+            format(int(m["totalMargin"]), ",")))
+        _say("[FUNDS]    span Rs%s + exposure Rs%s (hedgeBenefit Rs%s)" % (
+            format(int(m.get("spanMargin") or 0), ","),
+            format(int(m.get("exposure") or 0), ","),
+            format(int(m.get("hedgeBenefit") or 0), ",")))
+        if avail and m["totalMargin"] > avail:
+            _say("[FUNDS] SHORT BY Rs%s on an %s account" % (
+                format(int(m["totalMargin"] - avail), ","),
+                format(int(avail), ",")))
+    else:
+        _say("[FUNDS] basket margin unavailable: " + str(m)[:120])
     _say("[FUNDS] account available      Rs%s%s" % (
         format(int(avail), ","),
         "   [PAPER: no margin is enforced, so this will proceed regardless]"
