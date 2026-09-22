@@ -19,7 +19,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from parallax.adapters.broker.dhan import DhanBroker
 from parallax.adapters.telegram import TelegramBot
@@ -203,11 +203,18 @@ def main() -> None:
         _say("[HOLD] restored position, expiry " + str(st["plan"].get("expiry")))
     elif enter_now:
         if enter_at:
-            # wait for the requested clock time before pricing the trade
+            # Wait for the requested clock time.  The window matters: after the
+            # session closes the service restarts with no state, so a bare
+            # "now >= enter_at" test would fire a fresh condor at 15:20 into a
+            # closed market.  Only within 30 minutes of the target does it
+            # enter; otherwise it waits for the next occurrence.
             _say("[HOLD] armed, entering at %s IST (%d lots, width %d)"
                  % (enter_at, lots, width))
+            hh, mm = int(enter_at[:2]), int(enter_at[3:5])
             while True:
-                if datetime.now(IST).strftime("%H:%M") >= enter_at:
+                now = datetime.now(IST)
+                target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                if target <= now <= target + timedelta(minutes=30):
                     break
                 time.sleep(5)
         plan = ot.select(force=True, width=width)   # force: any day will do
