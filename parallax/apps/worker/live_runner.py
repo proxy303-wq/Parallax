@@ -74,6 +74,7 @@ class LiveRunner:
         self._broker_cache = None
         self._broker_mode = None
         self._last_token_check = 0.0
+        self._next_token_try = 0.0
         self.refreshed_on = None
         self.gates = {"skipped_stale": 0, "skipped_crossed": 0, "trades": 0,
                       "skipped_rejected": 0, "skipped_drift": 0}
@@ -280,13 +281,31 @@ class LiveRunner:
             try:
                 now = datetime.now(IST)
                 today = now.date()
-                # daily token refresh at 08:00 IST (one per day, pre-session)
-                if now.hour == 8 and self.refreshed_on != today:
-                    self.refreshed_on = today
-                    try:
-                        self._say(self._daily_refresh(now))
-                    except Exception as e:
-                        self._say("[TOKEN] 08:00 refresh error: " + str(e)[:90])
+                # Daily token refresh, from 08:00 IST until it actually works.
+                # This used to mark the day done BEFORE attempting the refresh,
+                # so a single failure at 08:00 - a Dhan blip, or the once-per-
+                # 2-minute generation limit - left the account with no usable
+                # token for the whole session.  It now retries every 2 minutes
+                # (which is exactly Dhan's TOTP rate limit) until the token is
+                # valid, and only then marks the day complete.
+                if now.hour >= 8 and self.refreshed_on != today:
+                    if time.time() >= self._next_token_try:
+                        self._next_token_try = time.time() + 120
+                        try:
+                            self._say(self._daily_refresh(now))
+                        except Exception as e:
+                            self._say("[TOKEN] refresh error: " + str(e)[:90])
+                        try:
+                            from parallax.adapters.broker.dhan_auth import (
+                                token_status as _ts,
+                            )
+                            st = _ts()
+                            if st.get("valid"):
+                                self.refreshed_on = today
+                                self._say("[TOKEN] ready: %sh left from %s"
+                                          % (st.get("hours_left"), st.get("source")))
+                        except Exception:
+                            pass
                 if today.weekday() < 5:
                     if now.hour == 9 and 15 <= now.minute <= 25 and self.armed_on != today:
                         self._say(self._armed_message(now))
@@ -488,7 +507,9 @@ class LiveRunner:
             print("flatten failed:", type(e).__name__, str(e)[:100])
 
     def _say(self, msg: str) -> None:
-        print(msg)
+        # flush: stdout to a pipe is block-buffered, so without this a service
+        # that was talking to Telegram looked totally silent in journalctl
+        print(msg, flush=True)
         if self.telegram.configured:
             self.telegram.send(msg)
 
