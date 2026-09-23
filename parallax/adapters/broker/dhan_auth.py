@@ -107,6 +107,11 @@ def renew_token(client_id: str, token: str) -> str | None:
 
 _GEN_STAMP = os.path.join(_REPO_ROOT, ".dhan_token_generated")
 
+#: A token is "due for renewal" below this remaining life.  Dhan tokens last
+#: exactly 24h from generation, so a daily 08:00 refresh always lands on a
+#: token with minutes left - it must renew on a margin, never on expiry.
+MIN_LIFE_H = 6.0
+
 
 def hours_since_generation() -> float:
     """Hours since the last TOTP generation (inf if never / unreadable)."""
@@ -237,13 +242,23 @@ def daily_refresh(client_id: str, pin: str = "", totp_secret: str = "",
 
     Tries RenewToken first - it extends an ACTIVE token by 24h and keeps the
     token type (SELF stays SELF, which market data needs).  Falls back to the
-    normal chain (saved -> TOTP).  Returns (token, source)."""
-    tok, _src = active_token()
-    if tok and not token_is_expired(tok, margin_s=0):
+    normal chain (saved -> TOTP).  Returns (token, source).
+
+    RENEWS ON A MARGIN, not on expiry.  A token issued at 08:00 lives exactly
+    24h, so at 08:00 the next day it has minutes left - "valid" by the
+    margin_s=0 test, which meant this function did nothing, the runner marked
+    the day done, and the account was dead five minutes later.  Anything under
+    MIN_LIFE_H is treated as due.
+    """
+    tok, src = active_token()
+    left_h = (token_expiry(tok) - time.time()) / 3600.0 if tok else -1.0
+    if tok and left_h > MIN_LIFE_H:
+        return tok, "still valid (%.1fh, %s)" % (left_h, src)
+    if tok and left_h > 0:
         renewed = renew_token(client_id, tok)
         if renewed and not token_is_expired(renewed, margin_s=0):
             save_token(renewed)
-            notify("token renewed via RenewToken (+24h)")
+            notify("token renewed via RenewToken (+24h), had %.1fh left" % left_h)
             return renewed, "RenewToken +24h"
     return refresh_token(client_id, pin, totp_secret, min_hours=0.0, notify=notify)
 

@@ -300,7 +300,11 @@ class LiveRunner:
                                 token_status as _ts,
                             )
                             st = _ts()
-                            if st.get("valid"):
+                            # Only call it done with real life left.  A token
+                            # that is "valid" with 5 minutes on it expires
+                            # during the session; that is exactly how the
+                            # account went dead on 23 Sep.
+                            if (st.get("hours_left") or 0) >= 6.0:
                                 self.refreshed_on = today
                                 self._say("[TOKEN] ready: %sh left from %s"
                                           % (st.get("hours_left"), st.get("source")))
