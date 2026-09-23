@@ -91,7 +91,7 @@ def funds_report(ot, plan: dict, lots: int, dry: bool) -> None:
     that matter: how much cash the hedges take out, how much the shorts bring
     in, and what the two shorts would need if the hedge benefit is NOT applied.
     """
-    UNITS = lots * 65
+    UNITS = lots * ot.lot        # per-index lot, not NIFTY's 65
     api = None
     try:
         api = ot.broker._api_client()
@@ -123,7 +123,7 @@ def funds_report(ot, plan: dict, lots: int, dry: bool) -> None:
             "in " if side == "SELL" else "out", format(int(cash), ","),
             format(int(m), ",") if m is not None else "n/a"))
     credit = plan["credit"]
-    ceiling = (100 - credit) * 65 * lots
+    ceiling = (wing * ot.step - credit) * ot.lot * lots
     avail = 0.0
     try:
         avail = float(getattr(ot.broker.get_account(), "available", 0.0) or 0.0)
@@ -182,7 +182,8 @@ def main() -> None:
     enter_now = "--enter" in sys.argv
     lots = int(arg("--lots", LOTS))
     LOTS = lots                     # save_state() records the global
-    width = int(arg("--width", 2))
+    short_off = int(arg("--short-off", 3))
+    wing = int(arg("--wing", 3))
     index = str(arg("--index", "NIFTY")).upper()
     STATE = arg("--state", os.path.join(REPO, "options_hold_%s.json" % index))
     INSTRUMENT = arg("--instrument", "%s 0DTE" % index)
@@ -237,12 +238,12 @@ def main() -> None:
                     _say("[%s] not on today's plan %s - waiting"
                          % (index, plan if plan else "futures day"))
                 else:
-                    _say("[%s] due today, entering at %s IST (%d lots, width %d)"
-                         % (index, enter_at or "now", lots, width))
+                    _say("[%s] due today, entering at %s IST (%d lots, %d-%d)"
+                         % (index, enter_at or "now", lots, short_off, wing))
             if due and in_window:
                 break
             time.sleep(60)
-        plan = ot.select(force=True, width=width)   # force: any day will do
+        plan = ot.select(force=True, short_off=short_off, wing=wing)
         if not plan.get("legs"):
             _say("[HOLD] cannot enter: " + str(plan.get("reason")))
             return
@@ -265,8 +266,12 @@ def main() -> None:
         _say("[HOLD] refusing to manage a position with a non-positive credit")
         return
     exp = ot.active["plan"].get("expiry")
-    maxp = credit * 65 * lots
-    maxl = (100 - credit) * 65 * lots
+    # lot and wing are per-index.  Hardcoding 65 and 100 is right for NIFTY and
+    # wrong by 3x for SENSEX (lot 20) and 3x on the wing for any 3-3 shape -
+    # it printed "max loss Rs-13,701" for a position whose real worst case was
+    # a Rs27,784 LOSS.
+    maxp = credit * ot.lot * lots
+    maxl = (wing * ot.step - credit) * ot.lot * lots
     _say("[HOLD] %d lots  credit %.2f pts  max profit Rs%s  max loss Rs%s  expiry %s"
          % (lots, credit, format(int(maxp), ","), format(int(maxl), ","), exp))
 

@@ -81,14 +81,27 @@ class ZeroDteCondor:
             return []
 
     # ---- selection --------------------------------------------------------
-    def select(self, symbol=None, expiry=None, force: bool = False,
-               width: int = 2) -> dict:
-        """width = how many strikes out the shorts sit.
+    #: Default shape: shorts 3 strikes out, hedges 3 strikes beyond those.
+    #: On NIFTY (50-point strikes) that is shorts ATM +- 150, hedges ATM +- 300.
+    #:
+    #: Chosen on 20 months / 83 NIFTY expiries, +-10 ladder, intrabar exits and
+    #: 3% costs, against the previous 2-2 (shorts ATM +- 100):
+    #:
+    #:     2-2 hold   +Rs  85,077  t=+1.10  worst -Rs 27,502  34% losing weeks
+    #:     3-3 hold   +Rs 214,484  t=+3.77  worst -Rs 14,453  23% losing weeks
+    #:
+    #: Pushing the sold legs out means they get breached less often, and the
+    #: bought legs sit far enough out to be cheap, so the credit barely suffers.
+    #: Found by searching ~40 shapes - train (+3.22) and test (+2.47) agreeing
+    #: is the only thing that keeps this credible.
+    DEFAULT_SHORT_OFF = 3
+    DEFAULT_WING = 3
 
-        width 2 is the production shape: shorts ATM +- 100, hedges ATM +- 200.
-        width 1 gives shorts ATM +- 50 and hedges ATM +- 150 - a tighter condor
-        on strikes that do not collide with a width-2 position in the same book.
-        """
+    def select(self, symbol=None, expiry=None, force: bool = False,
+               short_off=None, wing=None, width=None) -> dict:
+        """short_off = strikes out for the sold legs; wing = strikes beyond those
+        for the bought legs.  width is the old name and meant short_off with a
+        fixed 2-strike wing, kept so older call sites do not silently change."""
         if not force:
             # force is the explicit override: a positional condor may be opened
             # on any day, not only on a scheduled 0DTE expiry
@@ -101,11 +114,15 @@ class ZeroDteCondor:
         spot = chain["spot"]
         atm = round(spot / self.step) * self.step
         rows = {(r["strike"], r["option_type"]): r for r in chain["rows"]}
-        w = max(1, int(width))
-        spec = {"put_short": (atm - w * self.step, "PE"),
-                "call_short": (atm + w * self.step, "CE"),
-                "put_hedge": (atm - (w + 2) * self.step, "PE"),
-                "call_hedge": (atm + (w + 2) * self.step, "CE")}
+        if width is not None:
+            short_off = width
+            wing = wing or 2
+        so = max(1, int(short_off if short_off is not None else self.DEFAULT_SHORT_OFF))
+        wg = max(1, int(wing if wing is not None else self.DEFAULT_WING))
+        spec = {"put_short": (atm - so * self.step, "PE"),
+                "call_short": (atm + so * self.step, "CE"),
+                "put_hedge": (atm - (so + wg) * self.step, "PE"),
+                "call_hedge": (atm + (so + wg) * self.step, "CE")}
         legs = {}
         for name, (k, ot) in spec.items():
             r = rows.get((k, ot))
@@ -130,7 +147,8 @@ class ZeroDteCondor:
             return {"reason": f"IV {iv:.1%} <= realised {rv:.1%} - skip"}
         return {"spot": spot, "atm": atm, "credit": round(credit, 2),
                 "iv": round(iv, 4), "realized": round(rv, 4), "legs": legs,
-                "width": w, "expiry": chain.get("expiry") or "",
+                "short_off": so, "wing": wg,
+                "expiry": chain.get("expiry") or "",
                 "reason": "selected"}
 
     # ---- execution --------------------------------------------------------
