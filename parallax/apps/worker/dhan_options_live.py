@@ -270,7 +270,17 @@ class ZeroDteCondor:
         if self.feed is not None:
             ltp = {n: self.feed.ltp(plan["legs"][n]["security_id"])
                    for n in ("put_short", "call_short", "put_hedge", "call_hedge")}
-            if all(v is not None for v in ltp.values()):
+            # ALL FOUR legs at zero is missing data, not a worthless condor.
+            # Outside the session the feed hands back 0.0 rather than None, so
+            # the old test passed and val collapsed to 0 - which the journal
+            # read as the whole credit banked: SENSEX showed +Rs 20,216 and
+            # BANKEX +Rs 34,416 the moment the market closed, positions still
+            # open and expiring the next day.
+            #
+            # A single leg at 0 IS legitimate - far OTM legs do settle at zero -
+            # so only the uniform-zero case is rejected.
+            if all(v is not None for v in ltp.values()) and any(
+                    v > 0 for v in ltp.values()):
                 # COST TO CLOSE = shorts - hedges.  Buy the shorts back, sell
                 # the hedges.  This was negated, which made a freshly opened
                 # condor read as ~-credit and therefore as +200% profit, and
@@ -289,11 +299,16 @@ class ZeroDteCondor:
         for name, sign in (("put_short", 1), ("call_short", 1),
                            ("put_hedge", -1), ("call_hedge", -1)):
             l = plan["legs"][name]
+            _r0 = rows.get((l["strike"], l["type"]))
+            if _r0 is not None and not (_r0.get("bid") or 0) and not (_r0.get("ask") or 0):
+                return None      # chain is not quoting - keep the last good mark
             r = rows.get((l["strike"], l["type"]))
             if not r:
                 return None
             # buy the short back at the ask, sell the hedge at the bid
             px = r["ask"] if sign > 0 else r["bid"]
+            if not px:
+                return None      # a leg at 0 is absent, not free
             val += sign * px
         self.last_value = round(val, 2)
         self.last_pnl = round((plan["credit"] - val) * self.lot * self.lots, 2)

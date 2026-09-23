@@ -71,6 +71,28 @@ def test_decay_produces_a_fraction_of_the_credit():
     assert abs(t.last_pnl - (39.2 - 7.5) * LOT * 8) < 1.0
 
 
+def test_all_legs_at_zero_is_missing_data_not_a_worthless_condor(monkeypatch):
+    """Outside the session the feed answers 0.0, not None.
+
+    The old code read that as a condor worth nothing - i.e. the whole credit
+    banked. SENSEX showed +Rs 20,216 and BANKEX +Rs 34,416 the moment the
+    market closed, with both positions still open.
+    """
+    import parallax.apps.worker.dhan_options_live as D
+    monkeypatch.setattr(D, "fetch_option_chain", lambda *a, **k: None)
+    t = _trader({1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0})
+    assert t.value_now() is None
+    assert t.last_pnl == 0.0          # no phantom profit booked
+
+
+def test_one_leg_at_zero_is_still_a_valid_mark():
+    """A single far-OTM leg settling at zero is real, not missing data."""
+    t = _trader({1: 0.05, 2: 4.0, 3: 0.0, 4: 0.0})
+    val = t.value_now()
+    assert val is not None
+    assert abs(val - 4.05) < 0.01
+
+
 def test_full_decay_caps_at_the_credit():
     ltps = {1: 0.05, 2: 0.05, 3: 0.0, 4: 0.0}
     t = _trader(ltps)

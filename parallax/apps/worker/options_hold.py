@@ -279,6 +279,14 @@ def main() -> None:
     while True:
         try:
             now = datetime.now(IST)
+            # Do not mark outside the session.  The feed keeps answering after
+            # the close, and a stale or zero book is not a price.
+            if not (now.weekday() < 5 and (9, 15) <= (now.hour, now.minute) <= (15, 30)):
+                if ot.expiry_reached(now):
+                    pass          # fall through: the expiry close still has to run
+                else:
+                    time.sleep(POLL)
+                    continue
             val = ot.value_now()
             if val is not None:
                 prof = (credit - val) / credit
