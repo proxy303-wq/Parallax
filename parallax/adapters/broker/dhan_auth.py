@@ -8,9 +8,17 @@ token expires; this module renews it automatically using:
     3. GET /v2/RenewToken  (+24h, SELF tokens only)
     4. TOTP (RFC 6238) from DHAN_PIN + DHAN_TOTP_SECRET (APP token)
 
-Secrets are never logged.  Only ONE process should generate tokens (every TOTP
-generateAccessToken invalidates the previous token) — set
-PARALLAX_AUTO_GENERATE_TOKEN=false if another system is the generator.
+Secrets are never logged.  Only ONE process may generate tokens: every TOTP
+generateAccessToken INVALIDATES the previous token, so two generators do not
+race, they take turns destroying each other's session.
+
+That rule used to be enforced by a local stamp file, which holds on one box and
+collapses on a PaaS -- six containers each get their own filesystem, each sees
+"never generated", and each fires a generation.  The token and the generation
+stamp therefore live in the shared database whenever one is configured (see
+parallax/adapters/db.py), and generation itself is serialised with a database
+advisory lock.  Set PARALLAX_AUTO_GENERATE_TOKEN=false to opt a worker out
+entirely.
 """
 from __future__ import annotations
 
@@ -32,7 +40,26 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 DEFAULT_TOKEN_FILE = os.environ.get("DHAN_TOKEN_FILE") or os.path.join(
     _REPO_ROOT, ".dhan_token.txt")
 
+#: Keys in the shared key/value store (parallax/adapters/db.py).  When a
+#: database is configured these replace the per-process files outright.
+_TOKEN_KEY = "dhan_access_token"
+_GEN_KEY = "dhan_token_generated_at"
+
 _B32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+
+
+def _db():
+    """The shared-state module, imported lazily so startup stays cheap."""
+    from parallax.adapters import db as _dbmod
+    return _dbmod
+
+
+def _shared_state() -> bool:
+    """True when the token lives in a database shared by every worker."""
+    try:
+        return _db().is_postgres()
+    except Exception:
+        return False
 
 
 def _http_json(url, method="GET", headers=None, params=None, data=None, timeout=20):
@@ -114,7 +141,22 @@ MIN_LIFE_H = 6.0
 
 
 def hours_since_generation() -> float:
-    """Hours since the last TOTP generation (inf if never / unreadable)."""
+    """Hours since the last TOTP generation (inf if never).
+
+    Read from the shared store when there is one.  A per-container file stamp
+    guards nothing: six containers each read "never generated" and fire six
+    generations, five of which kill the others' tokens.
+    """
+    if _shared_state():
+        try:
+            v = _db().state_get(_GEN_KEY)
+        except Exception:
+            # Cannot tell when the last generation happened, so assume "just
+            # now" and refuse to generate.  A spurious generation invalidates a
+            # token another worker may be trading on; skipping one only costs a
+            # retry.
+            return 0.0
+        return (time.time() - float(v)) / 3600.0 if v else float("inf")
     try:
         if os.path.exists(_GEN_STAMP):
             with open(_GEN_STAMP, encoding="utf-8") as fh:
@@ -125,6 +167,11 @@ def hours_since_generation() -> float:
 
 
 def _mark_generation() -> None:
+    if _shared_state():
+        try:
+            _db().state_set(_GEN_KEY, str(time.time()))
+        except Exception:
+            pass
     try:
         with open(_GEN_STAMP, "w", encoding="utf-8") as fh:
             fh.write(str(time.time()))
@@ -143,15 +190,19 @@ def generate_access_token(client_id: str, pin: str, totp_code: str,
     only break a working session.  RenewToken (which extends an existing token
     without creating a new one) is NOT rate-limited by this guard and is always
     tried first."""
-    age = hours_since_generation()
-    if age < min_interval_hours:
-        return None
-    data = _http_json(f"{AUTH_BASE}/app/generateAccessToken", method="POST",
-                      params={"dhanClientId": client_id, "pin": pin, "totp": totp_code})
-    tok = data.get("accessToken", "") or None
-    if tok:
-        _mark_generation()
-    return tok
+    with _db().advisory_lock():
+        # Re-check INSIDE the lock.  The guard is only a guard if the stamp it
+        # reads is shared AND the read-then-write is atomic; without the lock
+        # two workers both read "never generated" and both fire.
+        age = hours_since_generation()
+        if age < min_interval_hours:
+            return None
+        data = _http_json(f"{AUTH_BASE}/app/generateAccessToken", method="POST",
+                          params={"dhanClientId": client_id, "pin": pin, "totp": totp_code})
+        tok = data.get("accessToken", "") or None
+        if tok:
+            _mark_generation()
+        return tok
 
 
 
@@ -230,6 +281,9 @@ def refresh_token(client_id: str, pin: str = "", totp_secret: str = "",
             save_token(new)
             notify("token regenerated via TOTP")
             return new, "regenerated via TOTP"
+        fresh = load_saved_token()
+        if fresh and not token_is_expired(fresh, margin_s=0):
+            return fresh, "shared token (generated by another worker)"
         if new is None and age < 23.0:
             return None, (f"generation skipped: last was {age:.1f}h ago "
                           f"(limit is one per day)")
@@ -264,6 +318,18 @@ def daily_refresh(client_id: str, pin: str = "", totp_secret: str = "",
 
 
 def load_saved_token(path: str = DEFAULT_TOKEN_FILE) -> str | None:
+    """The current token, from the shared store when there is one.
+
+    Falls back to the file so a single-box install and the test suite behave
+    exactly as they did before.
+    """
+    if _shared_state():
+        try:
+            tok = (_db().state_get(_TOKEN_KEY) or "").strip()
+            if tok:
+                return tok
+        except Exception:
+            pass
     try:
         if os.path.exists(path):
             tok = open(path, encoding="utf-8-sig").read().strip()
@@ -275,9 +341,22 @@ def load_saved_token(path: str = DEFAULT_TOKEN_FILE) -> str | None:
 
 
 def save_token(token: str, path: str = DEFAULT_TOKEN_FILE) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(token)
+    """Persist the token to every available store, best-effort.
+
+    A container filesystem can be read-only, and failing to write a local mirror
+    must never take down the process that just obtained a perfectly good token.
+    """
+    if _shared_state():
+        try:
+            _db().state_set(_TOKEN_KEY, token)
+        except Exception:
+            pass
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(token)
+    except OSError:
+        pass
 
 
 def resolve_token(client_id: str, access_token: str = "", pin: str = "",
@@ -313,6 +392,12 @@ def resolve_token(client_id: str, access_token: str = "", pin: str = "",
             save_token(tok, token_file)
             notify("dhan token auto-generated via TOTP (funds/portfolio only)")
             return tok, "TOTP auto-generated"
+        # A "failure" here usually means another worker won the generation lock
+        # a moment ago.  Every generation invalidates the previous token, so the
+        # right move is to adopt the winner's token, never to retry.
+        fresh = load_saved_token(token_file)
+        if fresh and not token_is_expired(fresh, margin_s=0):
+            return fresh, "shared token (generated by another worker)"
         return None, "TOTP token generation failed"
 
     return None, "no usable token and no DHAN_PIN/DHAN_TOTP_SECRET configured"

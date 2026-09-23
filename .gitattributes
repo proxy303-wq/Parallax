@@ -1,0 +1,10 @@
+# Line endings here are load-bearing.  A Procfile or .dockerignore delivered
+# with CRLF line endings breaks the container build in ways that look like
+# application bugs: the platform reads "web: ...\r" as an unknown command, and
+# .dockerignore patterns stop matching, so secrets and the 26MB scrip master
+# ship into the image.
+Procfile text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+docker-compose.yml text eol=lf
+*.sh text eol=lf

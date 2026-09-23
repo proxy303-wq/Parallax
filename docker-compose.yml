@@ -1,0 +1,97 @@
+# Local parity for the six production processes.
+#
+# This is NOT the production deployment path.  On Kuberns the Dockerfile is built
+# by the platform and each process is started by name from the Procfile (see
+# deploy/kuberns.md).  This file exists so the same six commands can be brought up
+# against a local Postgres on a laptop -- the only cheap way to catch a
+# per-process misconfiguration before it reaches the platform.
+#
+#   cp .env.example .env      # then fill in the placeholders
+#   docker compose up --build
+#
+# Dashboard: http://localhost:8000
+
+x-app: &app
+  build:
+    context: .
+  image: parallax:local
+  env_file:
+    - .env
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+# Every process shares one Postgres.  That sharing is the point: on a PaaS each
+# process is its own container with its own ephemeral filesystem, so the journal,
+# the open positions and the Dhan token have to live somewhere common.
+x-db: &db
+  PARALLAX_DB_URL: postgres://parallax:parallax@postgres:5432/parallax
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: parallax
+      POSTGRES_PASSWORD: parallax
+      POSTGRES_DB: parallax
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U parallax -d parallax"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  # 1/6 -- the dashboard.  The only process that speaks HTTP.
+  web:
+    <<: *app
+    command: ["uvicorn", "parallax.web.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
+    environment:
+      <<: *db
+      PORT: "8000"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/state >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  # 2/6 -- NIFTY futures ICT runner
+  live:
+    <<: *app
+    command: ["python", "-m", "parallax.apps.worker.live_runner"]
+    environment: *db
+
+  # 3/6 -- options supervisor (new module; absent from the tree until it lands)
+  options:
+    <<: *app
+    command: ["python", "-m", "parallax.apps.worker.options_supervisor"]
+    environment: *db
+
+  # 4/6 -- SMC crypto worker, BTCUSD (the flag default, stated anyway)
+  crypto:
+    <<: *app
+    command: ["python", "-m", "parallax.apps.worker.crypto_smc", "--symbol", "BTCUSD", "--poll", "60"]
+    environment: *db
+
+  # 5/6 -- second instance of the same worker, ETHUSD.  Shares mode, capital and
+  # the journal with "crypto" (see deploy/README.md) -- treat the pair as one book.
+  crypto-eth:
+    <<: *app
+    command: ["python", "-m", "parallax.apps.worker.crypto_smc", "--symbol", "ETHUSD", "--poll", "60"]
+    environment: *db
+
+  # 6/6 -- Telegram chat bot
+  chat:
+    <<: *app
+    command: ["python", "-m", "parallax.apps.worker.telegram_chat"]
+    environment: *db
+
+volumes:
+  pgdata:

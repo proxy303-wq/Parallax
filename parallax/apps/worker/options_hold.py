@@ -8,10 +8,15 @@ objective.  No ratchet, no stop.
 Marks come from the Dhan WebSocket on the four legs, falling back to the REST
 chain, so the value is real LTP rather than a model.
 
-State lives in options_hold.json so a restart does not lose the position.
+State lives in options_hold_<INDEX>.json so a restart does not lose the
+position.
 
     python -m parallax.apps.worker.options_hold --enter     # open now
     python -m parallax.apps.worker.options_hold             # just manage
+
+The CLI is a thin wrapper over run_session(); options_supervisor.py calls the
+same function, because the SCHEDULE - not the process - decides which index has
+work on a given day.
 """
 from __future__ import annotations
 
@@ -70,9 +75,10 @@ def load_state(path: str | None = None):
         return None
 
 
-def save_state(plan: dict, path: str | None = None) -> None:
+def save_state(plan: dict, path: str | None = None,
+               lots: int | None = None) -> None:
     with open(path or STATE, "w", encoding="utf-8") as fh:
-        json.dump({"plan": plan, "lots": LOTS,
+        json.dump({"plan": plan, "lots": LOTS if lots is None else lots,
                    "opened": datetime.now(timezone.utc).isoformat()}, fh)
 
 
@@ -83,7 +89,7 @@ def clear_state(path: str | None = None) -> None:
         pass
 
 
-def funds_report(ot, plan: dict, lots: int, dry: bool) -> None:
+def funds_report(ot, plan: dict, lots: int, dry: bool, wing: int) -> None:
     """Exactly what this order needs, leg by leg, at the live prices.
 
     Dhan's margin calculator prices ONE leg and returns the NAKED figure, so it
@@ -123,7 +129,7 @@ def funds_report(ot, plan: dict, lots: int, dry: bool) -> None:
             "in " if side == "SELL" else "out", format(int(cash), ","),
             format(int(m), ",") if m is not None else "n/a"))
     credit = plan["credit"]
-    ceiling = (wing * ot.step - credit) * ot.lot * lots
+    ceiling = (wing * ot.step - credit) * ot.lot * lots    # wing is per-index
     avail = 0.0
     try:
         avail = float(getattr(ot.broker.get_account(), "available", 0.0) or 0.0)
@@ -173,36 +179,51 @@ def funds_report(ot, plan: dict, lots: int, dry: bool) -> None:
             format(int(prem_out - avail), ",")))
 
 
-def main() -> None:
+def _ist_now() -> datetime:
+    """Now, in IST.  Never a naive local read: the box may well be on UTC."""
+    return datetime.now(IST)
+
+
+def run_session(index: str = "NIFTY", lots: int = LOTS, short_off: int = 3,
+                wing: int = 3, state: str | None = None,
+                instrument: str | None = None, poll: int = POLL,
+                enter_at: str | None = None, enter_now: bool = False,
+                deadline: datetime | None = None, plan_fn=None, now_fn=None,
+                sleep=time.sleep) -> str:
+    """Hold one index's positional condor for one session.
+
+    Split out of main() so a schedule-driven supervisor can run the one index
+    that is due from a single process.  Returns a short outcome - "expired",
+    "entry-failed", "deadline", "no-credit" or "no-position" - for the caller
+    to log; the CLI is a thin wrapper and behaves exactly as it did before.
+
+    deadline bounds the WAIT FOR THE ENTRY WINDOW only.  A position that is
+    already open is always managed to its expiry: standing down while real risk
+    is on the book would be the worst of both worlds.  The CLI passes None,
+    which is the old behaviour - wait for this index's next due day.
+    """
     from parallax.apps.worker.dhan_options_live import ZeroDteCondor
+    from parallax.config.schedule import options_plan as _plan
     from parallax.web.store import JournalStore
 
-    global LOTS, STATE, INSTRUMENT, POLL
-    from parallax.config.schedule import options_plan as _plan
-    enter_now = "--enter" in sys.argv
-    lots = int(arg("--lots", LOTS))
-    LOTS = lots                     # save_state() records the global
-    short_off = int(arg("--short-off", 3))
-    wing = int(arg("--wing", 3))
-    index = str(arg("--index", "NIFTY")).upper()
-    STATE = arg("--state", os.path.join(REPO, "options_hold_%s.json" % index))
-    INSTRUMENT = arg("--instrument", "%s 0DTE" % index)
-    POLL = int(arg("--poll", POLL))
-    enter_at = arg("--enter-at", None)
+    now_fn = now_fn or _ist_now
+    plan_fn = plan_fn or _plan
+    index = index.upper()
+    state = state or os.path.join(REPO, "options_hold_%s.json" % index)
+    instrument = instrument or ("%s 0DTE" % index)
     store = JournalStore()
     dry = store.mode() != "live"
-    st = load_state()
+    st = load_state(state)
     if st and st.get("plan"):
         # The POSITION's size beats the CLI default.  Restoring an 8-lot
         # position into a worker started with the new 5-lot default marked it
         # and reported its P&L at 5 lots - a 37% understatement of the truth.
         if st.get("lots"):
             lots = int(st["lots"])
-            LOTS = lots
-            _say("[HOLD] restoring %d lots from %s" % (lots, STATE))
+            _say("[HOLD] restoring %d lots from %s" % (lots, state))
 
     ot = ZeroDteCondor(broker=DhanBroker(dry_run=dry), lots=lots,
-                       hold_to_expiry=True, instrument_name=INSTRUMENT,
+                       hold_to_expiry=True, instrument_name=instrument,
                        index=index)
 
     if st and st.get("plan"):
@@ -224,16 +245,23 @@ def main() -> None:
             hh, mm = int(enter_at[:2]), int(enter_at[3:5])
         last_state = None
         while True:
-            now = datetime.now(IST)
-            plan = _plan(now)
+            now = now_fn()
+            # the supervisor bounds this wait to its own session, so a holder
+            # started after the window has gone cannot sit here into tomorrow
+            # and miss a different index that is actually due
+            if deadline is not None and now >= deadline:
+                _say("[%s] no entry window before %s IST - standing down"
+                     % (index, deadline.strftime("%H:%M")))
+                return "deadline"
+            plan = plan_fn(now)
             due = index in plan
             in_window = True
             if due and hh is not None:
                 target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
                 in_window = target <= now <= target + timedelta(minutes=30)
-            state = (due, in_window)
-            if state != last_state:
-                last_state = state
+            mark = (due, in_window)
+            if mark != last_state:
+                last_state = mark
                 if not due:
                     _say("[%s] not on today's plan %s - waiting"
                          % (index, plan if plan else "futures day"))
@@ -242,29 +270,29 @@ def main() -> None:
                          % (index, enter_at or "now", lots, short_off, wing))
             if due and in_window:
                 break
-            time.sleep(60)
+            sleep(60)
         plan = ot.select(force=True, short_off=short_off, wing=wing)
         if not plan.get("legs"):
             _say("[HOLD] cannot enter: " + str(plan.get("reason")))
-            return
+            return "entry-failed"
         _say("[HOLD] entering %dL condor ATM%.0f credit %.2fpts iv %.1f%% rv %.1f%% expiry %s [%s]"
              % (lots, plan["atm"], plan["credit"], plan["iv"] * 100,
                 plan["realized"] * 100, plan.get("expiry"),
                 "PAPER" if dry else "LIVE"))
-        funds_report(ot, plan, lots, dry)
+        funds_report(ot, plan, lots, dry, wing)
         ot.enter(plan)
         if ot.active is None:
             _say("[HOLD] entry failed - see the acks above")
-            return
-        save_state(plan)
+            return "entry-failed"
+        save_state(plan, state, lots)
     else:
         _say("[HOLD] no position and no --enter flag; nothing to do")
-        return
+        return "no-position"
 
     credit = ot.active["plan"]["credit"]
     if not credit or credit <= 0:
         _say("[HOLD] refusing to manage a position with a non-positive credit")
-        return
+        return "no-credit"
     exp = ot.active["plan"].get("expiry")
     # lot and wing are per-index.  Hardcoding 65 and 100 is right for NIFTY and
     # wrong by 3x for SENSEX (lot 20) and 3x on the wing for any 3-3 shape -
@@ -278,14 +306,14 @@ def main() -> None:
     last_day = None
     while True:
         try:
-            now = datetime.now(IST)
+            now = now_fn()
             # Do not mark outside the session.  The feed keeps answering after
             # the close, and a stale or zero book is not a price.
             if not (now.weekday() < 5 and (9, 15) <= (now.hour, now.minute) <= (15, 30)):
                 if ot.expiry_reached(now):
                     pass          # fall through: the expiry close still has to run
                 else:
-                    time.sleep(POLL)
+                    sleep(poll)
                     continue
             val = ot.value_now()
             if val is not None:
@@ -294,7 +322,7 @@ def main() -> None:
                 # taken, stop = the live mark (cost to close), target = the open
                 # P&L in rupees - the dashboard renders these three as
                 # Entry / Mark / Open P&L for strategies that publish a mark.
-                store.set_position(INSTRUMENT, "options-hold", "SELL", lots,
+                store.set_position(instrument, "options-hold", "SELL", lots,
                                    credit, val, ot.last_pnl)
                 if now.date() != last_day:
                     last_day = now.date()
@@ -309,12 +337,27 @@ def main() -> None:
             if ot.expiry_reached(now):
                 _say("[HOLD] expiry reached - closing")
                 ot.close("expiry")
-                clear_state()
+                clear_state(state)
                 _say("[HOLD] done. journal: " + str(store.summary()))
-                return
+                return "expired"
         except Exception as e:
             _say("[HOLD] error: " + type(e).__name__ + " " + str(e)[:120])
-        time.sleep(POLL)
+        sleep(poll)
+
+
+def main() -> None:
+    """CLI: one index, one process.  options_supervisor.py is the scheduled one."""
+    index = str(arg("--index", "NIFTY")).upper()
+    run_session(
+        index,
+        lots=int(arg("--lots", LOTS)),
+        short_off=int(arg("--short-off", 3)),
+        wing=int(arg("--wing", 3)),
+        state=arg("--state", os.path.join(REPO, "options_hold_%s.json" % index)),
+        instrument=arg("--instrument", "%s 0DTE" % index),
+        poll=int(arg("--poll", POLL)),
+        enter_at=arg("--enter-at", None),
+        enter_now="--enter" in sys.argv)
 
 
 if __name__ == "__main__":

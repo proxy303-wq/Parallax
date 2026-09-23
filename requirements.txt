@@ -4,4 +4,5 @@ numpy
 pandas
 pydantic
 dhanhq
+psycopg[binary]
 python-multipart

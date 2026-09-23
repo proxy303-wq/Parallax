@@ -1,5 +1,8 @@
 # Deploying PARALLAX to the VPS
 
+> Running on Kuberns instead of a VPS? See `deploy/kuberns.md` - same six processes,
+> declared in the root `Procfile` rather than as systemd units.
+
 ## Services
 
 | Unit | What it runs | Notes |

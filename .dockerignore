@@ -1,0 +1,83 @@
+# Build context for the PARALLAX image -- Kuberns builds this, and so does a
+# local "docker compose build".
+#
+# This file is a security boundary, not just a size optimisation.  The image is
+# built with "COPY . .", so every file not listed here is baked into a layer that
+# anyone who can pull the image can read.  A naive checkout of this repository
+# contains a live .env, a Dhan access token, a SQLite journal and a 900 MB
+# research cache directory.
+#
+# Matching notes (Docker/moby semantics): a pattern is matched against the path
+# relative to this file, component by component, and a single-segment pattern
+# such as "research" therefore excludes ONLY ./research.  That matters here --
+# parallax/apps/research/ is a required Python package (the workers import
+# parallax.apps.research.ict_backtest) and must survive.  The leading "/" below
+# states that root-relative intent explicitly.
+
+# --------------------------------------------------------------- secrets ----
+# Live credentials and broker session state.  Never ship, never commit.
+.env
+.env.*
+.dhan_token*
+.dhan_token_generated
+*.pem
+*.key
+
+# ---------------------------------------------------------- local state ----
+parallax.db
+parallax.db-*
+*.db-journal
+options_hold*.json
+*.log
+
+# -------------------------------------------------------------- scratch ----
+# Ad-hoc root-level scripts (_*.py is already gitignored).
+_*.py
+_*.sh
+_*.txt
+_*.out
+_*.json
+# ...but __init__.py starts with "_" too, and the package needs it.
+!**/__init__.py
+
+# --------------------------------- large caches that are not runtime deps ----
+# 900 MB of walk-forward artefacts (features.npz, daily_panel.parquet, bars/).
+# Not imported at runtime: the workers import the *package*
+# parallax/apps/research/, which is untouched by this rule.
+/research/
+# 25 MB Dhan scrip master.  Re-downloaded on demand by
+# parallax.adapters.broker.dhan.ensure_scrip_master() -- see deploy/kuberns.md
+# for the cold-start cost this implies.
+/data/
+# Backtest caches living inside the package.  The .py modules stay; only the
+# leading-underscore pickle caches go.
+**/_ladder_*.pkl
+**/_signals*.pkl
+
+# --------------------------------------------------- VCS and build tooling ----
+/.git/
+/.github/
+/k8s/
+/deploy/
+/tests/
+/.kuberns_docs/
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose.yml
+Procfile
+README.md
+
+# ----------------------------------------------------------------- python ----
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+/.venv/
+/venv/
+/env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/

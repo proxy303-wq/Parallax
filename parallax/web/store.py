@@ -1,16 +1,21 @@
-"""SQLite journal store — the dashboard's single source of truth.
+"""Journal store -- the dashboard's single source of truth.
 
 Trades, capital snapshots and open positions are recorded by the live workers
-and read by the web dashboard.  Uses stdlib sqlite3 (no ORM).
+and read by the web dashboard.
+
+Backed by SQLite on a single box and by Postgres once the workers run as
+separate containers; see parallax/adapters/db.py for why.  Call sites stay
+dialect-agnostic -- only the DDL and the upserts differ, and both come from
+that module.
 """
 from __future__ import annotations
 
 import os
-import sqlite3
 from datetime import datetime, timezone
 
-DB_PATH = os.environ.get("PARALLAX_DB", os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "parallax.db"))
+from parallax.adapters import db
+
+DB_PATH = db.DEFAULT_SQLITE
 
 
 def _now() -> str:
@@ -23,14 +28,16 @@ class JournalStore:
         self._init()
 
     def _connect(self):
-        return sqlite3.connect(self.path)
+        """Connection context manager; the path is ignored under Postgres."""
+        return db.connect(self.path)
 
     def _init_settings(self):
         with self._connect() as c:
             c.execute("""CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY, value TEXT)""")
-            c.execute("INSERT OR IGNORE INTO settings (key,value) VALUES ('mode','paper')")
-            c.execute("INSERT OR IGNORE INTO settings (key,value) VALUES ('paper_capital','800000')")
+            c.execute(db.insert_ignore_sql("settings", ("key", "value")), ("mode", "paper"))
+            c.execute(db.insert_ignore_sql("settings", ("key", "value")),
+                      ("paper_capital", "800000"))
 
     def get_setting(self, key: str, default: str = "") -> str:
         with self._connect() as c:
@@ -39,7 +46,7 @@ class JournalStore:
 
     def set_setting(self, key: str, value: str) -> None:
         with self._connect() as c:
-            c.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, value))
+            c.execute(db.upsert_sql("settings", ("key", "value"), ("key",)), (key, value))
 
     def mode(self) -> str:
         return self.get_setting("mode", "paper")
@@ -83,16 +90,7 @@ class JournalStore:
         return self.MODES[(i + 1) % len(self.MODES)]
 
     def _init(self):
-        with self._connect() as c:
-            c.execute("""CREATE TABLE IF NOT EXISTS trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts TEXT, strategy TEXT, instrument TEXT, side TEXT,
-                qty REAL, entry REAL, exit REAL, pnl REAL, outcome TEXT, note TEXT)""")
-            c.execute("""CREATE TABLE IF NOT EXISTS capital (
-                ts TEXT PRIMARY KEY, equity REAL, available REAL, margin_used REAL)""")
-            c.execute("""CREATE TABLE IF NOT EXISTS positions (
-                instrument TEXT PRIMARY KEY, strategy TEXT, side TEXT, qty REAL,
-                entry REAL, stop REAL, target REAL, updated TEXT)""")
+        db.ensure_schema(self.path)
         self._init_settings()
 
     # ---- writes (called by the live workers) ----------------------------
@@ -106,13 +104,17 @@ class JournalStore:
 
     def snapshot_capital(self, equity, available, margin_used=0.0):
         with self._connect() as c:
-            c.execute("INSERT OR REPLACE INTO capital VALUES (?,?,?,?)",
-                      (_now(), equity, available, margin_used))
+            c.execute(db.upsert_sql(
+                "capital", ("ts", "equity", "available", "margin_used"), ("ts",)),
+                (_now(), equity, available, margin_used))
 
     def set_position(self, instrument, strategy, side, qty, entry, stop, target):
         with self._connect() as c:
-            c.execute("""INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?,?)""",
-                      (instrument, strategy, side, qty, entry, stop, target, _now()))
+            c.execute(db.upsert_sql(
+                "positions",
+                ("instrument", "strategy", "side", "qty", "entry", "stop", "target", "updated"),
+                ("instrument",)),
+                (instrument, strategy, side, qty, entry, stop, target, _now()))
 
     def clear_positions(self):
         with self._connect() as c:
@@ -121,9 +123,10 @@ class JournalStore:
     def clear_position(self, instrument):
         """Clear ONE instrument's row.
 
-        A worker closing its own trade must never wipe the table: with two crypto workers
-        sharing this journal store, a global DELETE erases the other symbol's open
-        position and the dashboard silently shows nothing while a position is live.
+        A worker closing its own trade must never wipe the table: with two crypto
+        workers sharing this journal, a global DELETE erases the other symbol's
+        open position and the dashboard silently shows nothing while a position
+        is live.
         """
         with self._connect() as c:
             c.execute("DELETE FROM positions WHERE instrument=?", (instrument,))
