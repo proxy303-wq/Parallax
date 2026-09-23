@@ -41,9 +41,18 @@ def test_plain_thursday_is_sensex():
     assert options_plan(D(2026, 10, 1)) == ["SENSEX"]
 
 
-def test_last_thursday_adds_bankex():
-    assert options_plan(D(2026, 9, 24)) == ["SENSEX", "BANKEX"]
-    assert options_plan(D(2026, 10, 29)) == ["SENSEX", "BANKEX"]
+def test_last_thursday_is_bankex_only():
+    """The monthly displaces the weekly - only ever one condor a day."""
+    assert options_plan(D(2026, 9, 24)) == ["BANKEX"]
+    assert options_plan(D(2026, 10, 29)) == ["BANKEX"]
+    assert "SENSEX" not in options_plan(D(2026, 9, 24))
+
+
+def test_never_more_than_one_index_a_day():
+    d = D(2026, 9, 1)
+    while d <= D(2027, 3, 31):
+        assert len(options_plan(d)) <= 1, d
+        d += datetime.timedelta(days=1)
 
 
 def test_other_days_are_futures():
@@ -69,7 +78,7 @@ def test_monthly_indices_fire_exactly_once_a_month():
             counts[sym] = counts.get(sym, 0) + 1
         d += datetime.timedelta(days=1)
     assert counts.get("NIFTY") == 4          # Sep 1, 8, 15, 22
-    assert counts.get("SENSEX") == 4         # Sep 3, 10, 17, 24
+    assert counts.get("SENSEX") == 3         # Sep 3, 10, 17 (24 goes to BANKEX)
     assert counts.get("BANKNIFTY") == 1      # Sep 29
     assert counts.get("BANKEX") == 1         # Sep 24
     assert "FINNIFTY" not in counts          # dropped: same day and bet as BANKNIFTY

@@ -51,19 +51,25 @@ def options_active(d) -> bool:
 
 
 def options_plan(d) -> list:
-    """Which index condors to run on this date, in order.
+    """Which index condor runs on this date.
 
-    Tuesday  : BANKNIFTY on the last Tuesday of the month, else NIFTY.
-    Thursday : SENSEX always, plus BANKEX on the last Thursday.
+    EXACTLY ONE per day, always:
+
+        normal Tuesday   NIFTY
+        last Tuesday     BANKNIFTY   (the monthly takes the slot)
+        normal Thursday  SENSEX
+        last Thursday    BANKEX      (the monthly takes the slot)
+
+    The monthlies displace the weeklies rather than joining them.  Two condors
+    on one day is two short-vol positions on the same market expiring together
+    - at 8 lots that was Rs 12.6 lakh against an Rs 8 lakh book, and the
+    correlation means the max losses land on the same session.
     """
     d = _d(d)
     if d.weekday() == NIFTY_EXPIRY_WEEKDAY:
         return ["BANKNIFTY"] if _is_last_of_month(d, NIFTY_EXPIRY_WEEKDAY) else ["NIFTY"]
     if d.weekday() == SENSEX_EXPIRY_WEEKDAY:
-        out = ["SENSEX"]
-        if _is_last_of_month(d, SENSEX_EXPIRY_WEEKDAY):
-            out.append("BANKEX")
-        return out
+        return ["BANKEX"] if _is_last_of_month(d, SENSEX_EXPIRY_WEEKDAY) else ["SENSEX"]
     return []
 
 
