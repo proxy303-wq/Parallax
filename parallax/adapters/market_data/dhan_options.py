@@ -1,9 +1,16 @@
 """Dhan index-options market data + contract resolution.
 
 Two paths:
-  1. LIVE option chain (needs a SELF token — market data): POST /v2/optionchain
+  1. LIVE option chain: POST /v2/optionchain
      and /v2/optionchain/expirylist return spot, strikes, premiums, IV, OI, and
      bid/ask per leg.
+
+     This used to say "needs a SELF token", on the belief that TOTP-minted APP
+     tokens were barred from market data.  Re-tested against a live APP token on
+     2026-09-24: the chain returned full data (NIFTY spot 23446.8, 256 rows;
+     BANKEX 63916.52, 322 rows, real bid/ask).  An APP token is sufficient, which
+     means a fresh host can bootstrap itself from DHAN_PIN + DHAN_TOTP_SECRET
+     with no browser-consent step.
   2. OFFLINE contract resolution (works now, from the Dhan scrip master):
      resolve a NIFTY/FINNIFTY option to (security_id, trading_symbol, lot_size)
      for order placement — no market-data token required.
@@ -66,7 +73,7 @@ def fetch_expiries(symbol: str, token: str | None = None,
 def fetch_option_chain(symbol: str, expiry: str | None = None,
                        token: str | None = None,
                        client_id: str | None = None) -> dict | None:
-    """Live option chain (needs a SELF token).  Returns
+    """Live option chain.  Returns
     {underlying, expiry, spot, rows:[{strike, option_type, security_id, ltp,
     oi, volume, iv, bid, ask}]} or None on failure."""
     client_id, token = _auth(token, client_id)

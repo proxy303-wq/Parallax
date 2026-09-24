@@ -196,7 +196,17 @@ def generate_access_token(client_id: str, pin: str, totp_code: str,
         # two workers both read "never generated" and both fire.
         age = hours_since_generation()
         if age < min_interval_hours:
-            return None
+            # ...but decline only while the live token is still worth keeping.
+            # RenewToken is SELF-only, so an APP token cannot be extended and has
+            # to be RE-MINTED before it lapses.  The daily 08:00 refresh lands
+            # ~23h after generation and a flat 23h guard refuses exactly there;
+            # refresh_token() is then called with min_hours=0.0, sees a token
+            # that is technically still alive, and returns it.  The session dies
+            # mid-morning the day after deploy.
+            cur = load_saved_token()
+            left_h = (token_expiry(cur) - time.time()) / 3600.0 if cur else 0.0
+            if left_h > MIN_LIFE_H:
+                return None
         data = _http_json(f"{AUTH_BASE}/app/generateAccessToken", method="POST",
                           params={"dhanClientId": client_id, "pin": pin, "totp": totp_code})
         tok = data.get("accessToken", "") or None
@@ -411,8 +421,15 @@ def resolve_token(client_id: str, access_token: str = "", pin: str = "",
 # ------------------------------------------------------------
 # SELF-token consent flow (one-time browser login -> market data)
 # ------------------------------------------------------------
-# APP tokens (TOTP-generated) can trade (orders/funds) but CANNOT read market
-# data (option chain / quotes).  A SELF token needs a one-time browser consent:
+# SELF tokens need a one-time browser consent.  They were historically the
+# preferred type, on the belief that TOTP-minted APP tokens could not read
+# market data.  Re-tested 2026-09-24: an APP token returned a full live option
+# chain (NIFTY spot 23446.8, 256 rows, real bid/ask), so APP is sufficient and a
+# new host bootstraps from DHAN_PIN + DHAN_TOTP_SECRET alone.  Keep this flow
+# for the case where Dhan re-tightens that rule -- the symptom would be an empty
+# option chain, not an auth error.  A SELF token also has one real advantage:
+# RenewToken only extends SELF tokens, so an APP token must be re-minted daily
+# rather than renewed.
 #   1. api_key_consent()      -> consentAppId
 #   2. user opens consent_login_url() and logs in, pastes the redirect tokenId
 #   3. consume_consent()      -> accessToken (SELF)

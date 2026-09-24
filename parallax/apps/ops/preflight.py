@@ -106,14 +106,15 @@ def check_token() -> None:
     _line("ok", f"valid -- {hours}h left, source={st.get('source')}, type={ttype or 'UNKNOWN'}")
 
     if "APP" in ttype:
-        _line("fail", "this is an APP token.  Dhan APP tokens cannot read market "
-                      "data: POST /v2/optionchain needs SELF.  The options leg "
-                      "will report 'chain unavailable' and never open a position, "
-                      "and a restored position cannot be marked or exited.")
-        _fail.append("APP token cannot read market data")
+        _line("warn", "APP token (TOTP-minted).  These were believed to be barred "
+                      "from market data, but an APP token was verified returning a "
+                      "full live option chain on 2026-09-24, so this works.  Note "
+                      "it cannot be renewed -- RenewToken is SELF-only -- so it is "
+                      "re-minted from DHAN_PIN + DHAN_TOTP_SECRET each day.")
+        _warn.append("APP token (works; re-minted daily rather than renewed)")
     elif "SELF" in ttype:
-        _line("ok", "SELF token -- market data available, and daily_refresh keeps "
-                    "it alive via RenewToken without another browser login")
+        _line("ok", "SELF token -- daily_refresh keeps it alive via RenewToken "
+                    "without another browser login")
     else:
         _line("warn", f"tokenConsumerType is {ttype!r}, which is neither SELF nor "
                       f"APP -- cannot confirm market data will work")
