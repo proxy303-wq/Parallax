@@ -330,7 +330,13 @@ def daily_refresh(client_id: str, pin: str = "", totp_secret: str = "",
             save_token(renewed)
             notify("token renewed via RenewToken (+24h), had %.1fh left" % left_h)
             return renewed, "RenewToken +24h"
-    return refresh_token(client_id, pin, totp_secret, min_hours=0.0, notify=notify)
+    # min_hours must be MIN_LIFE_H, not 0.0.  refresh_token() returns early when
+    # the live token has more than min_hours left, so with 0.0 a token carrying
+    # four minutes of life counts as "still valid" and is handed straight back --
+    # the renewal never runs and the session dies mid-morning.  Ask for the same
+    # margin this function demands, so a token below it is actually replaced.
+    return refresh_token(client_id, pin, totp_secret,
+                         min_hours=MIN_LIFE_H, notify=notify)
 
 
 def load_saved_token(path: str = DEFAULT_TOKEN_FILE) -> str | None:
