@@ -202,6 +202,12 @@ def generate_access_token(client_id: str, pin: str, totp_code: str,
         tok = data.get("accessToken", "") or None
         if tok:
             _mark_generation()
+            # Publish it BEFORE dropping the lock.  Otherwise the next worker
+            # waiting outside wakes to age==0, correctly declines to generate,
+            # then looks for a shared token that has not been written yet and
+            # concludes there is none -- so five of six containers still fail to
+            # authenticate even though the lock did its job.
+            save_token(tok)
         return tok
 
 
