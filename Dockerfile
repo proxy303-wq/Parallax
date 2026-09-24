@@ -1,9 +1,8 @@
 # PARALLAX -- one image, six processes.
 #
-# The same image runs the dashboard and all five workers.  The per-process
-# command does NOT live here: the platform supplies it (Kuberns "Procfile
-# commands", or the Procfile at the repository root -- see deploy/kuberns.md).
-# Nothing in this file is web-specific.
+# The same image can run the dashboard or any of the workers; the per-process
+# command is supplied at run time.  Nothing in this file is web-specific.
+# See deploy/README.md for how the system is actually run.
 #
 # python:3.12-slim on purpose.  Production runs 3.12; building on 3.11 here
 # would let a 3.12-only syntax error reach the box before anyone saw it.  Never
@@ -55,9 +54,8 @@ EXPOSE 8000
 # Neutral default: the web process.  Override the command per service for the
 # five workers (Procfile / deploy/kuberns.md).
 #
-# Deliberately NO HEALTHCHECK here.  One image serves six processes, so an
-# image-level HEALTHCHECK would mark all five worker containers unhealthy, and
-# on a Swarm topology (Kuberns "master node") Swarm would replace those tasks in
-# a loop.  The web healthcheck belongs in docker-compose.yml, where it can be
-# scoped to the one service that actually speaks HTTP.
+# Deliberately NO HEALTHCHECK here.  One image serves several processes, so an
+# image-level HEALTHCHECK would mark every worker unhealthy and have the
+# orchestrator replace those tasks in a loop.  The dashboard exposes /health;
+# scope any probe to the one process that actually speaks HTTP.
 CMD ["sh", "-c", "exec uvicorn parallax.web.app:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]

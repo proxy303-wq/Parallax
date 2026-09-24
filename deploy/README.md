@@ -1,8 +1,5 @@
 # Deploying PARALLAX to the VPS
 
-> Running on Kuberns instead of a VPS? See `deploy/kuberns.md` - same six processes,
-> declared in the root `Procfile` rather than as systemd units.
-
 ## Services
 
 | Unit | What it runs | Notes |
@@ -10,8 +7,17 @@
 | `parallax-web` | FastAPI dashboard | journal store is the single source of truth |
 | `parallax-crypto` | SMC crypto worker, **BTCUSD** | `--symbol` defaults to BTCUSD |
 | `parallax-crypto-eth` | SMC crypto worker, **ETHUSD** | second instance, same code |
-| `parallax-live` | NIFTY futures ICT runner | |
+| `parallax-live` | futures ICT runner + options orchestration | |
+| `parallax-opt-nifty` | NIFTY expiry-day condor | plain Tuesday |
+| `parallax-opt-banknifty` | BANKNIFTY expiry-day condor | last Tuesday of the month |
+| `parallax-opt-sensex` | SENSEX expiry-day condor | plain Thursday |
+| `parallax-opt-bankex` | BANKEX expiry-day condor | last Thursday of the month |
 | `parallax-chat` | Telegram chat bot | |
+
+All four options units run continuously, but `config.schedule.options_plan()` names
+**exactly one** index per day, so at most one of them ever has work. Each holds a
+position to expiry; `options_hold_<INDEX>.json` is its live state, and deleting that
+file makes it forget an open position and never exit it.
 
 Install:
 
