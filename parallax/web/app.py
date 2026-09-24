@@ -354,3 +354,83 @@ def api_state():
         "positions": store.positions(),
         "trades": store.trades(limit=200),
     })
+
+
+#: Names the deployment must supply.  PARALLAX_DB_URL is included because
+#: without it each container silently falls back to its own ephemeral SQLite
+#: file: the journal resets on every redeploy and all six workers authenticate
+#: against Dhan separately.
+_REQUIRED_ENV = (
+    "DHAN_CLIENT_ID", "DHAN_PIN", "DHAN_TOTP_SECRET", "PARALLAX_DB_URL",
+    "PARALLAX_TELEGRAM_BOT_TOKEN", "PARALLAX_TELEGRAM_CHAT_ID",
+    "DEEPSEEK_API_KEY",
+)
+
+
+@app.get("/health")
+def health():
+    """Deployment readiness -- "“did my environment variables land?”
+
+    Open this after a deploy.  Anything named in `env.missing` is a variable the
+    platform did not pass through, and `ready:false` means the host cannot
+    trade.  Names, counts and token metadata only -- never a value, because this
+    endpoint sits on the public URL.
+
+    Always answers 200.  A non-2xx here would have the platform evict and
+    replace the container, and none of these conditions are fixed by a restart;
+    the point is to be *readable*, not to trigger a restart loop.
+    """
+    from parallax.adapters import db
+    from parallax.adapters.env import env
+
+    missing = [n for n in _REQUIRED_ENV if not env(n)]
+    out = {
+        "service": "parallax",
+        "ready": True,
+        "env": {"set": [n for n in _REQUIRED_ENV if env(n)], "missing": missing},
+    }
+
+    try:
+        out["journal"] = {
+            "backend": "postgres" if db.is_postgres() else "sqlite",
+            "reachable": True,
+            "mode": store.mode(),
+            "trades": len(store.trades(limit=100000)),
+            "open_positions": len(store.positions()),
+        }
+        if not db.is_postgres():
+            out["journal"]["warning"] = (
+                "not a shared store -- on a PaaS every container gets its own "
+                "ephemeral file, so the journal resets on redeploy")
+            out["ready"] = False
+    except Exception as exc:
+        out["journal"] = {"reachable": False, "error": type(exc).__name__}
+        out["ready"] = False
+
+    try:
+        from parallax.adapters.broker.dhan_auth import token_status
+        st = token_status()
+        out["token"] = {"present": bool(st.get("valid")), "type": st.get("type"),
+                        "hours_left": st.get("hours_left")}
+        if not st.get("valid"):
+            out["ready"] = False
+    except Exception as exc:
+        out["token"] = {"present": False, "error": type(exc).__name__}
+
+    try:
+        from parallax.config.schedule import options_plan
+        from datetime import datetime, timedelta, timezone
+        ist = timezone(timedelta(hours=5, minutes=30))
+        today = datetime.now(ist).date()
+        out["schedule"] = {
+            "now_ist": datetime.now(ist).strftime("%Y-%m-%d %H:%M %a"),
+            "today": options_plan(today),
+            "tomorrow": options_plan(today + timedelta(days=1)),
+        }
+    except Exception as exc:
+        out["schedule"] = {"error": type(exc).__name__}
+
+    if missing:
+        out["ready"] = False
+    out["status"] = "ok" if out["ready"] else "degraded"
+    return JSONResponse(out)
