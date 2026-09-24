@@ -13,7 +13,11 @@ _*.sh
 .dhan_token_generated
 # Dhan scrip master cache (26 MB, downloaded on demand) - never commit this
 data/security_id_list.csv
+data/api-scrip-master.csv
 data/*.part
+# swing research data: hundreds of MB of regenerable panels, bars and feature
+# matrices.  Committing these once put ~700 MB into a single commit.
+research/swing/data/
 # futures_study signal scan cache (7 minutes to rebuild)
 parallax/apps/research/_signals_*.pkl
 options_hold.json

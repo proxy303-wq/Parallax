@@ -47,12 +47,12 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin parallax \
  && chown -R parallax:parallax /app
 USER parallax
 
-# Informational.  The real port is whatever $PORT the platform injects; this is
-# only the fallback used when nothing is injected.
+# Informational.  Honour $PORT when the environment supplies one; this is the
+# fallback.
 EXPOSE 8000
 
-# Neutral default: the web process.  Override the command per service for the
-# five workers (Procfile / deploy/kuberns.md).
+# Neutral default: the dashboard.  Override the command to run any of the
+# workers instead (see deploy/README.md).
 #
 # Deliberately NO HEALTHCHECK here.  One image serves several processes, so an
 # image-level HEALTHCHECK would mark every worker unhealthy and have the
