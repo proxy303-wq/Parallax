@@ -1,4 +1,4 @@
-"""PARALLAX dashboard - FastAPI web UI (home / futures / options / crypto).
+"""PARALLAX dashboard - FastAPI web UI (home / index options / stock options).
 
 Reads the shared SQLite journal store; the PAPER/LIVE toggle is stored there
 too so the same switch drives the web dashboard, the Telegram bot and the
@@ -27,8 +27,7 @@ h1{font-size:20px;margin:0}.hdr{display:flex;justify-content:space-between;align
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #21262d}
 th{color:#8b949e;font-weight:500}.tag{padding:2px 8px;border-radius:10px;font-size:11px}
-.fut{background:#1f6feb22;color:#58a6ff}.opt{background:#8957e522;color:#bc8cff}
-.cry{background:#d2992222;color:#d29922}
+.opt{background:#8957e522;color:#bc8cff}.stk{background:#3fb95022;color:#3fb950}
 .mode{padding:4px 12px;border-radius:12px;font-size:12px;font-weight:700;letter-spacing:1px}
 .mode.paper{background:#d2992222;color:#d29922}
 .mode.demo{background:#1f6feb22;color:#58a6ff}
@@ -56,9 +55,9 @@ def _stat(k, v, cls=""):
 def _page(title, active, body):
     nav = "".join(
         f'<a href="{h}" class="{"active" if a == active else ""}">{t}</a>'
-        for t, h, a in (("Home", "/", "home"), ("Futures", "/futures", "futures"),
-                        ("Options", "/options", "options"),
-                        ("Crypto", "/crypto", "crypto")))
+        for t, h, a in (("Home", "/", "home"),
+                        ("Index Options", "/options", "options"),
+                        ("Stock Options", "/stock-options", "stock-options")))
     mode = store.mode()
     nxt = store.next_mode()
     toggle = ("<form method='post' action='/mode' style='margin:0'>"
@@ -90,7 +89,7 @@ def _trade_rows(trades):
             "<th>Qty</th><th>Entry to Exit</th><th>P&amp;L</th><th>Outcome</th></tr>")
     rows = []
     for t in trades:
-        cls = "fut" if t["strategy"] == "futures" else ("opt" if t["strategy"] == "options" else "cry")
+        cls = "stk" if "stock" in str(t["strategy"]).lower() else "opt"
         pcls = "pos" if t["pnl"] > 0 else "neg"
         rows.append(
             "<tr>"
@@ -103,24 +102,43 @@ def _trade_rows(trades):
     return "<table>" + head + "".join(rows) + "</table>"
 
 
-def _is_live_strategy(strategy) -> bool:
-    """Strategies whose positions row carries a mark and an open P&L.
+#: The dashboard shows option books only.  Crypto and futures were removed from
+#: the UI, but the filtering happens HERE rather than in the store: the workers
+#: keep recording to the journal exactly as before, the dashboard just stops
+#: displaying them.  Nothing is deleted, so any of it can be shown again by
+#: relaxing these predicates.
+def _is_option_strategy(strategy) -> bool:
+    return "option" in str(strategy or "").lower()
 
-    They publish their own rupee figure, so the dashboard never has to know a
-    contract's multiplier (NIFTY futures and options are both 65 per lot, crypto
-    is not).
-    """
-    s = str(strategy or "")
-    return "options" in s or s.startswith("futures")
+
+def _option_trades(limit=200):
+    return [t for t in store.trades(limit=limit) if _is_option_strategy(t["strategy"])]
+
+
+def _option_positions():
+    return [p for p in store.positions() if _is_option_strategy(p.get("strategy"))]
+
+
+def _option_summary() -> dict:
+    """Aggregate P&L over option strategies only."""
+    full = store.summary()
+    by = {k: v for k, v in full["by_strategy"].items() if _is_option_strategy(k)}
+    return {"total_pnl": round(sum(v["pnl"] for v in by.values())),
+            "by_strategy": by,
+            "n_trades": sum(v["n"] for v in by.values())}
 
 
 def _open_pnl() -> float:
-    return sum(float(p.get("target") or 0.0) for p in store.positions()
-               if _is_live_strategy(p.get("strategy")))
+    """Open P&L summed from the figure each option book publishes on its own row.
+
+    The holder writes its rupee mark into `target`, so the dashboard never has to
+    know a contract's multiplier.
+    """
+    return sum(float(p.get("target") or 0.0) for p in _option_positions())
 
 
 def _positions_card():
-    rows = store.positions()
+    rows = _option_positions()
     if not rows:
         return _card("Open Positions",
                      "<p style='color:#8b949e;margin:0'>flat</p>")
@@ -130,12 +148,9 @@ def _positions_card():
     out = ""
     for p in rows:
         strat = str(p.get("strategy") or "")
-        if _is_live_strategy(strat):
-            pnl = float(p.get("target") or 0.0)
-            cls = "pos" if pnl >= 0 else "neg"
-            ptxt = "Rs{:+,.0f}".format(pnl)
-        else:
-            cls, ptxt = "", "-"
+        pnl = float(p.get("target") or 0.0)
+        cls = "pos" if pnl >= 0 else "neg"
+        ptxt = "Rs{:+,.0f}".format(pnl)
         out += (f"<tr><td>{p.get('instrument')}</td><td>{strat}</td>"
                 f"<td>{p.get('side')}</td><td>{_fmt(p.get('qty'))}</td>"
                 f"<td>{_fmt(p.get('entry'), 2)}</td>"
@@ -185,9 +200,7 @@ def _strategy_page(strategy, title, sub):
                  + _stat("Win rate", "{:.0%}".format(wr))
                  + _stat("Trades", str(len(trades)))
                  + "</div>", sub)
-    live = [p for p in store.positions()
-            if _is_live_strategy(p.get("strategy"))
-            and (strategy in str(p.get("strategy") or ""))]
+    live = [p for p in _option_positions() if strategy in str(p.get("strategy") or "")]
     if live:
         body += _positions_card()
     body += _card("Journal", _trade_rows(trades))
@@ -197,146 +210,48 @@ def _strategy_page(strategy, title, sub):
 @app.get("/", response_class=HTMLResponse)
 def home():
     return _page("Home", "home",
-                 _summary_cards(store.capital(), store.summary())
+                 _summary_cards(store.capital(), _option_summary())
                  + _positions_card()
-                 + _card("Trade Journal (recent)", _trade_rows(store.trades(limit=15))))
-
-
-@app.get("/futures", response_class=HTMLResponse)
-def futures():
-    return _page("Futures", "futures", _strategy_page(
-        "futures", "NIFTY Futures - ICT scalper", "3 lots, intraday, sweep to OTE"))
+                 + _card("Trade Journal (recent)", _trade_rows(_option_trades(limit=15))))
 
 
 @app.get("/options", response_class=HTMLResponse)
 def options():
-    return _page("Options", "options", _strategy_page(
-        "options", "NIFTY 0DTE - hedged short strangle (selling)",
-        "8 lots, intraday, TP 50% / SL 2x, IV>RV filter"))
+    return _page("Index Options", "options", _strategy_page(
+        "options", "Index 0DTE - hedged condor (selling)",
+        "Hold to expiry, no stop, wing 3. Per-index shape and entry time are in "
+        "deploy/README.md."))
 
 
-# Every symbol gets its own card.  Each worker publishes its own state key, so adding a
-# symbol here is all the dashboard needs to show a second book.
-CRYPTO_SYMBOLS = ("BTCUSD", "ETHUSD", "XAUTUSD")
+# --------------------------------------------------------------- stock options
+# Single-stock (equity) options.  Nothing writes to this book yet, so the page is
+# built to render whatever appears -- it starts working the moment a worker
+# journals a strategy whose name contains "stock", with no further change here.
+STOCK_KEY = "stock"
 
 
-def _crypto_state(symbol: str):
-    """State published by parallax.apps.worker.crypto_smc for ONE symbol.
-
-    Falls back to the legacy un-scoped 'crypto_state' key so a worker still running older
-    code renders on the BTC card instead of disappearing.
-    """
-    import json as _json
-    raw = store.get_setting("crypto_state_" + symbol, "")
-    if not raw and symbol == "BTCUSD":
-        raw = store.get_setting("crypto_state", "")
-    if not raw:
-        return None
-    try:
-        return _json.loads(raw)
-    except Exception:
-        return None
-
-
-def _crypto_card(symbol: str, mode: str):
-    st = _crypto_state(symbol)
-    if st is None:
-        return _card("Crypto (Delta) - SMC " + symbol,
-                     "<p style='color:#8b949e'>Worker has not run yet. Start it with "
-                     "<code>python -m parallax.apps.worker.crypto_smc --symbol " + symbol
-                     + "</code>.</p>")
-    else:
-        px = st.get("last_price")
-        pos = st.get("position")
-        order = st.get("order")
-        zone = st.get("zone")
-        # --- worker liveness: a dead worker must be visible, not silent ---
-        age_txt, age_cls = "-", ""
-        try:
-            from datetime import datetime, timezone
-            lb = str(st.get("last_bar", "")).replace("+00:00", "+0000")
-            ts = datetime.strptime(lb[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            secs = (datetime.now(timezone.utc) - ts).total_seconds()
-            age_txt = ("%.0fm" % (secs / 60)) if secs < 5400 else ("%.1fh" % (secs / 3600))
-            # a 1h strategy should have a bar no older than ~2 intervals
-            age_cls = "neg" if secs > 2.5 * 3600 else "pos"
-        except Exception:
-            pass
-
-        grid = ("<div class='grid'>"
-                + _stat("Mode", mode.upper())
-                + _stat(symbol, _fmt(px, 1) if px else "-")
-                + _stat("Bias", {1: "LONG", -1: "SHORT", 0: "flat"}.get(st.get("bias"), "-"))
-                + _stat("Equity", "Rs" + _fmt(st.get("equity")))
-                + _stat("Bar age", age_txt, age_cls)
-                + "</div>")
-        body = _card("Crypto (Delta) - SMC FVG retest, %s %s"
-                     % (symbol, st.get("interval") or "1h"), grid,
-                     "Last completed bar " + str(st.get("last_bar")) + "  |  "
-                     + str(st.get("bars_processed")) + " bars processed  |  "
-                     + "entries rest as limits (maker), targets limits, stops market (taker)")
-
-        if pos:
-            pg = ("<div class='grid'>"
-                  + _stat("Side", "LONG" if pos["side"] > 0 else "SHORT")
-                  + _stat("Entry", _fmt(pos["entry"], 1))
-                  + _stat("Stop", _fmt(pos["stop"], 1))
-                  + _stat("Qty", _fmt(pos["qty"], 0) + " cts")
-                  + "</div>")
-            body += _card("Open position", pg)
-        elif order:
-            og = ("<div class='grid'>"
-                  + _stat("Resting", "BUY" if order["side"] > 0 else "SELL")
-                  + _stat("Limit", _fmt(order["price"], 1))
-                  + _stat("Stop", _fmt(order["stop"], 1))
-                  + _stat("Expires in", str(order["bars_left"]) + " bars")
-                  + "</div>")
-            body += _card("Working order", og)
-        else:
-            z = ""
-            if zone:
-                z = ("Zone " + ("bullish" if zone["direction"] > 0 else "bearish")
-                     + ": " + _fmt(zone["bot"], 1) + " - " + _fmt(zone["top"], 1))
-            body += _card("Working order", "<p style='color:#8b949e'>Flat - no order "
-                          + ("(" + z + ")" if z else "") + "</p>")
-
-        ev = st.get("events") or []
-        if ev:
-            body += _card("Recent decisions",
-                          "<pre style='font-size:12px;color:#8b949e;white-space:pre-wrap'>"
-                          + "\n".join(str(e) for e in ev[-6:]) + "</pre>")
-
-        # --- frozen strategy parameters, straight from the config ---
-        try:
-            from parallax.config.crypto import DEFAULT, USD_INR, product
-            sp = product(symbol)          # contract size is per symbol, never assumed
-            pg = ("<div class='grid'>"
-                  + _stat("Risk / trade", "%.2f%%" % (DEFAULT.risk_pct * 100))
-                  + _stat("Leverage", "%.0fx" % DEFAULT.max_leverage)
-                  + _stat("Stop floor", "%.1f ATR" % DEFAULT.stop_atr_floor)
-                  + _stat("Trail", "%.1f ATR" % DEFAULT.trail_atr)
-                  + _stat("Zone", DEFAULT.zone.upper() + " " + DEFAULT.interval)
-                  + _stat("Contract", _fmt(sp.contract_value, 4) + " " + symbol[:3])
-                  + _stat("Direction", "long+short" if DEFAULT.allow_short else "long only")
-                  + "</div>")
-            body += _card("Strategy parameters", pg,
-                          "Frozen from the walk-forward (REPORT.md s13-s17). "
-                          "USD/INR %.1f | venue notional cap $%s | fees %.2f/%.2f bp" %
-                          (USD_INR, _fmt(sp.max_notional_usd),
-                           sp.maker_rate * 10000, sp.taker_rate * 10000))
-        except Exception:
-            pass
-
-    return body
-
-
-@app.get("/crypto", response_class=HTMLResponse)
-def crypto():
-    trades = store.trades(strategy="crypto", limit=100)
-    mode = store.mode()
-    body = "".join(_crypto_card(s, mode) for s in CRYPTO_SYMBOLS)
+@app.get("/stock-options", response_class=HTMLResponse)
+def stock_options():
+    trades = [t for t in store.trades(limit=300)
+              if STOCK_KEY in str(t["strategy"]).lower()]
+    live = [p for p in _option_positions() if STOCK_KEY in str(p.get("strategy")).lower()]
+    wins = sum(1 for t in trades if t["pnl"] > 0)
+    pnl = sum(t["pnl"] for t in trades)
+    cls = "pos" if pnl >= 0 else "neg"
+    body = _card(
+        "Stock Options",
+        "<div class='grid'>"
+        + _stat("P&L", "Rs{:+,.0f}".format(pnl), cls)
+        + _stat("Win rate", "{:.0%}".format(wins / len(trades) if trades else 0.0))
+        + _stat("Trades", str(len(trades)))
+        + "</div>",
+        "Single-stock options. No book is wired up yet -- this page is ready for one.")
+    body += _positions_card() if live else _card(
+        "Open Positions", "<p style='color:#8b949e;margin:0'>flat</p>")
     body += _card("Journal", _trade_rows(trades))
-    return _page("Crypto", "crypto", body)
+    return _page("Stock Options", "stock-options", body)
+
+
 
 
 @app.post("/mode")
