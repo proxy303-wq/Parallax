@@ -27,12 +27,24 @@ on NIFTY (50-pt step, ~23,400) but only 0.40% on SENSEX (100-pt step, ~74,200),
 so the identical config was a third as much room in volatility terms on the BSE
 indices.  Measured from the rolling-option ladder, net of 3% cost, close-confirmed:
 
-| Unit | `--short-off` | `--enter-at` | basis |
-|---|---|---|---|
-| `parallax-opt-nifty` | **4** | 09:20 | 66 usable expiries, t +7.26; 09:20 beat every later entry |
-| `parallax-opt-sensex` | **4** | **09:30** | 54 usable expiries, t +6.69; 09:30 beat 09:20 on total, drawdown and t for BOTH short_off 3 and 4 |
-| `parallax-opt-bankex` | 3 (default) | 09:20 | 8 usable expiries — a DEFAULT, not a finding |
-| `parallax-opt-banknifty` | 3 (default) | 09:20 | 14 usable expiries; 3 beat 4 on total (Rs89,854 vs 67,208) and 09:20 beat every later entry — defaults confirmed, not tuned |
+Chosen by STRICT walk-forward (selector sees only completed quarters), 7 lots,
+valued at INTRINSIC settlement so no shape is penalised by ladder truncation:
+
+| Unit | `--short-off` | `--enter-at` | return/DD at 3 / 4 / 5 | choice |
+|---|---|---|---|---|
+| `parallax-opt-nifty` | **5** | 09:20 | 7.2x / 9.3x / **24.2x** | wider buys 2.6x better risk for 12% less total |
+| `parallax-opt-sensex` | **5** | **09:30** | 7.6x / 9.3x / **14.3x** | same direction; 09:30 still beats 09:20 at short_off 5 (DD 47,290 vs 110,240) |
+| `parallax-opt-bankex` | 3 (default) | 09:20 | 1.9x / 1.3x / 0.6x | the ONLY index where tighter is better on both total and risk |
+| `parallax-opt-banknifty` | 3 (default) | 09:20 | 4.2x / **5.0x** / 4.9x | 19 expiries; 4 is marginally better but inside the noise |
+
+Bankex and Banknifty sit on the CLI default rather than a tuned value, and that is
+deliberate: Bankex has 9 usable expiries and Banknifty 19, against Nifty's 83 and
+Sensex's 79.  Do not "fix" them from a sample that small.
+
+**Do not tune `--short-off` over time.**  A walk-forward selector that picks each
+quarter's shape from prior quarters' results never beat the best fixed choice: on
+Nifty it finished below BOTH fixed 3 and fixed 4, and on Sensex and Banknifty it
+locked onto 3 and finished exactly level.  Pick one and leave it.
 
 Wing stays 3 everywhere.  Two things to know before "improving" these:
 
