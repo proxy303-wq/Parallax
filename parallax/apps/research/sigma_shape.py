@@ -153,7 +153,12 @@ def run_shape(idx, byts, k=None, fixed_strikes=None, wing_strikes=3,
             continue
 
         short_pts = ss * step
-        max_loss = short_pts + wing_strikes * step - credit
+        # Max loss is the WING width minus the credit, not the distance to the
+        # shorts plus the wing.  A condor's worst case is the vertical spread
+        # going fully in the money: (K1-K2) - credit.  Counting short_pts here
+        # doubled it.  P&L never used this field, so no result changed -- only
+        # the max-loss and R:R columns I printed.
+        max_loss = wing_strikes * step - credit
         out.append({
             "date": d, "atm": atm, "spot": ed["spot"], "straddle": strad,
             "short_strikes": ss, "short_pts": short_pts,
