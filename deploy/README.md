@@ -32,7 +32,7 @@ indices.  Measured from the rolling-option ladder, net of 3% cost, close-confirm
 | `parallax-opt-nifty` | **4** | 09:20 | 66 usable expiries, t +7.26; 09:20 beat every later entry |
 | `parallax-opt-sensex` | **4** | **09:30** | 54 usable expiries, t +6.69; 09:30 beat 09:20 on total, drawdown and t for BOTH short_off 3 and 4 |
 | `parallax-opt-bankex` | 3 (default) | 09:20 | 8 usable expiries — a DEFAULT, not a finding |
-| `parallax-opt-banknifty` | 3 (default) | 09:20 | never backtested — no ladder fetched yet |
+| `parallax-opt-banknifty` | 3 (default) | 09:20 | 14 usable expiries; 3 beat 4 on total (Rs89,854 vs 67,208) and 09:20 beat every later entry — defaults confirmed, not tuned |
 
 Wing stays 3 everywhere.  Two things to know before "improving" these:
 
