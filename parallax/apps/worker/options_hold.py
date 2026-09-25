@@ -39,7 +39,11 @@ STATE = os.path.join(REPO, "options_hold.json")
 #: requirement - is NOT netted by the hedge, which is why these are so large.
 LOTS = 5
 POLL = 15
-INSTRUMENT = "NIFTY 0DTE HOLD"     # distinct row, so it never collides with the runner
+# There was an INSTRUMENT = "NIFTY 0DTE HOLD" constant here, claiming a name
+# that never collides with the runner.  It was dead: main() defaults to
+# "%s 0DTE" % index, which is the SAME key the runner's condor used, so the two
+# engines upserted over each other.  The runner now writes "NIFTY 0DTE
+# INTRADAY" and the entry guard below keeps them from running together.
 
 
 def _say(msg: str) -> None:
@@ -238,7 +242,7 @@ def run_session(index: str = "NIFTY", lots: int = LOTS, short_off: int = 3,
         # looked again would sleep straight through its own expiry day.
         #
         #   last Tuesday  -> BANKNIFTY only (NIFTY and FINNIFTY skipped)
-        #   last Thursday -> SENSEX + BANKEX
+        #   last Thursday -> BANKEX only (SENSEX skipped)
         #   other Tue/Thu -> NIFTY / SENSEX
         hh = mm = None
         if enter_at:
@@ -271,6 +275,23 @@ def run_session(index: str = "NIFTY", lots: int = LOTS, short_off: int = 3,
             if due and in_window:
                 break
             sleep(60)
+
+        # Mutual exclusion with live_runner's intraday condor: both engines
+        # sell a NIFTY 0DTE condor on the same expiry day.  The runner already
+        # defers to any open options row; this is the mirror of that check, so
+        # whichever engine starts second stands down instead of stacking a
+        # second condor on the same market.  Our own row is excluded by
+        # instrument, since position rows are keyed on it.
+        positions_fn = getattr(store, "positions", None)
+        foreign = [p for p in (positions_fn() if positions_fn else [])
+                   if str(p.get("strategy") or "").startswith("options")
+                   and str(p.get("instrument") or "") != instrument]
+        if foreign:
+            _say("[HOLD] not entering - another options position is open: "
+                 + ", ".join("%s/%s" % (p.get("instrument"), p.get("strategy"))
+                             for p in foreign))
+            return "position-held"
+
         plan = ot.select(force=True, short_off=short_off, wing=wing)
         if not plan.get("legs"):
             _say("[HOLD] cannot enter: " + str(plan.get("reason")))

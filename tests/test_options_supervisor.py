@@ -291,6 +291,62 @@ def test_the_holder_waits_when_it_is_early(offline_holder):
     assert out == "deadline"
 
 
+# ---- the runner/positional mutual exclusion ------------------------------
+def _offline_holder_with(monkeypatch, rows):
+    """run_session faked out, with `positions` reporting the given rows."""
+    import parallax.apps.worker.dhan_options_live as live
+    import parallax.web.store as store
+
+    monkeypatch.setattr(live, "ZeroDteCondor", _FakeCondor)
+    monkeypatch.setattr(store, "JournalStore", lambda *a, **k: type(
+        "S", (), {"mode": lambda s: "paper",
+                  "positions": lambda s: rows})())
+    monkeypatch.setattr(options_hold, "DhanBroker", lambda *a, **k: None)
+    monkeypatch.setattr(options_hold, "_say", lambda msg: None)
+
+
+def test_the_holder_stands_down_when_the_runner_already_holds_a_condor(
+        monkeypatch, tmp_path):
+    """live_runner's intraday condor and this positional one both sell a NIFTY
+    0DTE condor, and they used to share one positions row.  The runner defers
+    to any open options row; this is the mirror of that check, so the two
+    engines can never stack on the same market."""
+    _offline_holder_with(monkeypatch, [
+        {"instrument": "NIFTY 0DTE INTRADAY", "strategy": "options"}])
+    out = options_hold.run_session(
+        "NIFTY", state=str(tmp_path / "n.json"), enter_now=True,
+        enter_at="09:20", deadline=at(NORMAL_TUE, 15, 30),
+        now_fn=lambda: at(NORMAL_TUE, 9, 25), sleep=lambda s: None)
+    assert out == "position-held"
+
+
+def test_the_holder_is_not_blocked_by_its_own_position_row(
+        monkeypatch, tmp_path):
+    """Our own row is keyed on our own instrument, so it must not stop us -
+    otherwise a restart mid-position would refuse to do anything."""
+    _offline_holder_with(monkeypatch, [
+        {"instrument": "NIFTY 0DTE", "strategy": "options-hold"}])
+    out = options_hold.run_session(
+        "NIFTY", state=str(tmp_path / "n.json"), enter_now=True,
+        enter_at="09:20", deadline=at(NORMAL_TUE, 15, 30),
+        now_fn=lambda: at(NORMAL_TUE, 9, 25), sleep=lambda s: None)
+    assert out == "entry-failed"          # it reached the entry, past the guard
+
+
+def test_a_non_options_position_does_not_block_the_holder(
+        monkeypatch, tmp_path):
+    """Futures and crypto rows are not option condors and are none of our
+    business - the guard keys on the strategy, not on 'something is open'."""
+    _offline_holder_with(monkeypatch, [
+        {"instrument": "NIFTY", "strategy": "futures"},
+        {"instrument": "BTCUSD", "strategy": "crypto"}])
+    out = options_hold.run_session(
+        "NIFTY", state=str(tmp_path / "n.json"), enter_now=True,
+        enter_at="09:20", deadline=at(NORMAL_TUE, 15, 30),
+        now_fn=lambda: at(NORMAL_TUE, 9, 25), sleep=lambda s: None)
+    assert out == "entry-failed"
+
+
 # ---- the CLI the PaaS starts ---------------------------------------------
 def test_the_cli_defaults_are_the_production_ones():
     a = _parser().parse_args([])

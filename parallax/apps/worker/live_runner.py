@@ -21,7 +21,8 @@ from parallax.contracts import (
 )
 from parallax.adapters.broker.dhan import DhanBroker
 from parallax.adapters.telegram import TelegramBot
-from parallax.config.schedule import futures_active, options_active
+from parallax.config.schedule import (futures_active, options_active,
+                                       options_plan)
 from parallax.core.context import build_context
 from parallax.core.execution import ExitConfig, ExitManager
 from parallax.core.ict import ICTConfig, detect
@@ -235,9 +236,14 @@ class LiveRunner:
             detail = f"{self.lots_futures} lots, intraday"
             note = "0DTE engine is silent today (not an expiry day)."
         elif options_active(today):
-            engine = "OPTIONS - NIFTY 0DTE hedged short strangle"
-            detail = (f"{self.lots_options} lots, TP ratchet 50/75/90, SL 2x, "
-                      f"max loss ~Rs{(100 - 16) * 65 * self.lots_options:,.0f}/day")
+            # Name the index the SCHEDULE picked and describe the strategy that
+            # actually runs (the positional condor, one index, hold to expiry).
+            # This used to advertise "NIFTY 0DTE hedged short strangle, TP
+            # ratchet 50/75/90, SL 2x" - the retired intraday engine - so the
+            # daily briefing contradicted the book every expiry day.
+            idx = (options_plan(today) or ["-"])[0]
+            engine = f"OPTIONS - {idx} 0DTE positional condor"
+            detail = "hedged condor, hold to expiry, no stop / no target"
             note = "Futures engine is silent today (0DTE expiry day)."
         else:
             engine = "NONE"
@@ -416,8 +422,14 @@ class LiveRunner:
         TP / SL / session close.  Same gates and mode as the futures path."""
         from parallax.apps.worker.dhan_options_live import ZeroDteCondor
         if self.options_trader is None:
-            self.options_trader = ZeroDteCondor(broker=self._broker(),
-                                                lots=self.lots_options)
+            # A row of its OWN.  ZeroDteCondor defaults instrument_name to
+            # "NIFTY 0DTE", which is exactly what options_hold writes for the
+            # positional condor, and set_position upserts on instrument - so
+            # the two engines silently overwrote each other's position and
+            # P&L.  The name is also what the mutual entry guard keys off.
+            self.options_trader = ZeroDteCondor(
+                broker=self._broker(), lots=self.lots_options,
+                instrument_name="NIFTY 0DTE INTRADAY")
         ot = self.options_trader
         ot.broker.dry_run = (self.store.mode() != "live")
         now = datetime.now(IST)

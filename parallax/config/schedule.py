@@ -13,8 +13,11 @@ lots that is Rs 10.8-14.7 lakh of margin against an Rs 8 lakh book, so the
 rule is: on the last Tuesday trade BANKNIFTY ALONE and skip NIFTY. FINNIFTY is
 dropped entirely - it expires the same day as BANKNIFTY and is the same bet.
 
-The last Thursday puts SENSEX and BANKEX together for about Rs 7.0 lakh, which
-fits, so both run.
+The last Thursday puts SENSEX and BANKEX together.  They used to run as a
+pair (about Rs 7.0 lakh, which fits the book), but two condors in one session
+is two short-vol positions on the same market: the indices are ~90% correlated
+and the max losses land together.  So the monthly displaces the weekly here
+too - on the last Thursday it is BANKEX ALONE and SENSEX is skipped.
 
 Every other weekday the futures engine runs and the options engine is idle.
 """
