@@ -69,7 +69,8 @@ def legs_for(atm, step, short_strikes, wing_strikes):
 
 def run_shape(idx, byts, k=None, fixed_strikes=None, wing_strikes=3,
               train_end=datetime.date(2026, 2, 1), lots=5, cost_pct=0.0,
-              date_from=None, date_to=None, require_close=True, verbose=False):
+              entry_bar=1, date_from=None, date_to=None, require_close=True,
+              verbose=False):
     """One shape over every expiry in the ladder.
 
     k               -> shorts at k * ATM_straddle (sigma-normalised)
@@ -94,7 +95,12 @@ def run_shape(idx, byts, k=None, fixed_strikes=None, wing_strikes=3,
         tss = days.get(d) or []
         if len(tss) < 60:
             continue
-        ed = byts[tss[1]]
+        # Bars run 09:15, 09:20, 09:25 ... so entry_bar=1 is 09:20 (what the
+        # live runner uses) and entry_bar=3 is 09:30.
+        if len(tss) <= entry_bar + 1:
+            skipped += 1
+            continue
+        ed = byts[tss[entry_bar]]
         atm = round(ed["spot"] / step) * step
         strad = _straddle(ed)
         if strad is None or strad <= 0:
@@ -129,7 +135,7 @@ def run_shape(idx, byts, k=None, fixed_strikes=None, wing_strikes=3,
         # That is not a rounding error: it turned every BANKEX expiry into a
         # full-credit win.  require_close drops those trades instead.
         peak, last, last_j = 0.0, None, None
-        for j, ts in enumerate(tss[2:], start=2):
+        for j, ts in enumerate(tss[entry_bar + 1:], start=entry_bar + 1):
             row = byts[ts]
             at = round(row["spot"] / step) * step
             val = _value(row, legs, at, step)

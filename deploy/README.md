@@ -19,6 +19,34 @@ All four options units run continuously, but `config.schedule.options_plan()` na
 position to expiry; `options_hold_<INDEX>.json` is its live state, and deleting that
 file makes it forget an open position and never exit it.
 
+## Per-index condor settings (they are NOT the same, on purpose)
+
+A strike COUNT is a different bet on every index because one strike is worth a
+different fraction of price and of a day's move.  Three strikes is 0.64% of spot
+on NIFTY (50-pt step, ~23,400) but only 0.40% on SENSEX (100-pt step, ~74,200),
+so the identical config was a third as much room in volatility terms on the BSE
+indices.  Measured from the rolling-option ladder, net of 3% cost, close-confirmed:
+
+| Unit | `--short-off` | `--enter-at` | basis |
+|---|---|---|---|
+| `parallax-opt-nifty` | **4** | 09:20 | 66 usable expiries, t +7.26; 09:20 beat every later entry |
+| `parallax-opt-sensex` | **4** | **09:30** | 54 usable expiries, t +6.69; 09:30 beat 09:20 on total, drawdown and t for BOTH short_off 3 and 4 |
+| `parallax-opt-bankex` | 3 (default) | 09:20 | 8 usable expiries — a DEFAULT, not a finding |
+| `parallax-opt-banknifty` | 3 (default) | 09:20 | never backtested — no ladder fetched yet |
+
+Wing stays 3 everywhere.  Two things to know before "improving" these:
+
+* **The ladder is the ceiling.** Dhan's rolling endpoint stops at ±10 strikes, and
+  a leg's offset is measured from each bar's own ATM — so once the index trends,
+  far legs leave the ladder and the expiry can no longer be valued.  SENSEX keeps
+  51 of 79 expiries at short_off 4 but only 36 of 79 at 5.  Wider is not free,
+  and `_run_sigma`'s `require_close` drops the trades it cannot score rather
+  than scoring them on a stale mark (which is what once made every BANKEX expiry
+  look like a full-credit win).
+* **Selection is not neutral.** The trades that drop out are disproportionately
+  the trend days, which are exactly the days a wide shape needs to be judged on.
+  So a wide shape is only ever measured on the days it survived.
+
 Install:
 
 ```bash
