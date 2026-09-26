@@ -24,7 +24,7 @@ import datetime
 from collections import OrderedDict
 
 from parallax.apps.research.condor_study import IST, MAX_OFF, _value
-from parallax.apps.research.sigma_shape import is_expiry, legs_for
+from parallax.apps.research.sigma_shape import _straddle, is_expiry, legs_for
 
 
 def _days(byts):
@@ -77,6 +77,10 @@ def run_timing(idx, byts, fixed_strikes, wing_strikes=3, entry_days_before=0,
             continue
         ed = byts[ets[entry_bar]]
         atm = round(ed["spot"] / step) * step
+        strad = _straddle(ed)
+        if strad is None or strad <= 0:
+            skipped += 1
+            continue
         legs = legs_for(atm, step, fixed_strikes, wing_strikes)
         credit = _value(ed, legs, atm, step)
         if credit is None:
@@ -122,6 +126,9 @@ def run_timing(idx, byts, fixed_strikes, wing_strikes=3, entry_days_before=0,
             "credit_pct": 100.0 * credit / ed["spot"],
             "max_loss": max_loss,
             "rr": credit / max_loss if max_loss > 0 else 0.0,
+            "sigma_room": short_pts / strad,
+            "room_per_credit": ((short_pts / strad) / (credit / ed["spot"])
+                                if credit > 0 else 0.0),
             "pct": last, "peak": peak,
             "pnl": (last * credit - cost_pct * credit) * idx.lot * lots,
             "entry": credit * idx.lot * lots,
