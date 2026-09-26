@@ -351,4 +351,4 @@ def test_a_non_options_position_does_not_block_the_holder(
 def test_the_cli_defaults_are_the_production_ones():
     a = _parser().parse_args([])
     assert (a.lots, a.short_off, a.wing, a.state_dir, a.poll, a.enter_at) == (
-        4, 3, 3, ".", 30, "09:20")
+        7, 3, 3, ".", 30, "09:20")

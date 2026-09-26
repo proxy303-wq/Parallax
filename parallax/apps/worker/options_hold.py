@@ -33,11 +33,22 @@ from parallax.apps.worker.live_runner import IST
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
 STATE = os.path.join(REPO, "options_hold.json")
-#: Funded size.  Dhan's multi-leg calculator puts a 15-lot NIFTY condor at
-#: Rs 19,41,121 and an 8-lot at Rs 10,35,264; on Rs 8L the ceiling is 6 lots
-#: (Rs 7,76,448), so 5 leaves a margin buffer.  Exposure margin - ~94% of the
-#: requirement - is NOT netted by the hedge, which is why these are so large.
-LOTS = 5
+#: Funded size.
+#:
+#: The figures that used to sit here (15 lots Rs 19,41,121, 8 lots Rs 10,35,264,
+#: i.e. Rs 1,29,408/lot) are ~2x what Dhan actually returns now and are not
+#: reproducible at any shape or size I measured.
+#:
+#: Measured 2026-09-25 against /margincalculator/multi at short_off 5 / wing 3:
+#: Rs 70,369 per lot for NIFTY, and it is exactly linear - 4, 8 and 10 lots all
+#: came back to the rupee.  So 7 lots is Rs 4,92,584, which is 62% of the Rs 8L
+#: paper book.
+#:
+#: The reason the requirement is large is that only SPAN nets against the hedge.
+#: Exposure - ~85% of the total - is charged on the shorts whatever the wings do.
+#: Hedging collapses SPAN 13.8x (Rs 12,54,383 -> Rs 90,779 at 10 lots) and moves
+#: exposure not at all (Rs 6,00,823 either way).
+LOTS = 7
 POLL = 15
 # There was an INSTRUMENT = "NIFTY 0DTE HOLD" constant here, claiming a name
 # that never collides with the runner.  It was dead: main() defaults to

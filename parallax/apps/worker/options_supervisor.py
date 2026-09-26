@@ -18,7 +18,7 @@ Only one holder can run at a time, and that is enforced with a lock rather than
 assumed: the schedule guarantees at most one index a day, and this guard means a
 bug cannot quietly turn that into two condors on one expiry.
 
-    python -m parallax.apps.worker.options_supervisor --lots 4
+    python -m parallax.apps.worker.options_supervisor --lots 7
 """
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ def _ist_now() -> datetime:
 class OptionsSupervisor:
     """Runs the holder for exactly one index at a time, for the process lifetime."""
 
-    def __init__(self, lots: int = 4, short_off: int = 3, wing: int = 3,
+    def __init__(self, lots: int = 7, short_off: int = 3, wing: int = 3,
                  state_dir: str = ".", poll: int = 30, enter_at: str = "09:20",
                  runner=None, plan_fn=options_plan, now_fn=None,
                  sleep_fn=time.sleep, retries: int = MAX_RETRIES,
@@ -211,7 +211,7 @@ class OptionsSupervisor:
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="One supervisor for the positional condor schedule")
-    p.add_argument("--lots", type=int, default=4)
+    p.add_argument("--lots", type=int, default=7)
     p.add_argument("--short-off", dest="short_off", type=int, default=3,
                    help="strikes out for the sold legs")
     p.add_argument("--wing", type=int, default=3,

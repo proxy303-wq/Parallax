@@ -67,7 +67,7 @@ class TelegramChatbot:
         s = self.store.summary()
         lines = ["Strategies:"]
         lines.append("  futures - NIFTY ICT scalper, 3 lots, intraday")
-        lines.append("  options - NIFTY 0DTE hedged short strangle, 8 lots, intraday")
+        lines.append("  options - index 0DTE condor, hold to expiry, no stop")
         lines.append("  crypto  - BTC/XAUTUSD, coming soon")
         lines.append(f"P&L by strategy: {s['by_strategy']}")
         return NL.join(lines)
