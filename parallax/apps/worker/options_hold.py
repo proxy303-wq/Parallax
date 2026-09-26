@@ -287,12 +287,11 @@ def run_session(index: str = "NIFTY", lots: int = LOTS, short_off: int = 3,
                 break
             sleep(60)
 
-        # Mutual exclusion with live_runner's intraday condor: both engines
-        # sell a NIFTY 0DTE condor on the same expiry day.  The runner already
-        # defers to any open options row; this is the mirror of that check, so
-        # whichever engine starts second stands down instead of stacking a
-        # second condor on the same market.  Our own row is excluded by
-        # instrument, since position rows are keyed on it.
+        # Never stack a second condor on the same market.  This guarded against
+        # live_runner's intraday engine, which is now retired; it stays as a
+        # general check, because a manual entry or a worker restarted onto a day
+        # it has already traded would otherwise open a second position.  Our own
+        # row is excluded by instrument, since position rows are keyed on it.
         positions_fn = getattr(store, "positions", None)
         foreign = [p for p in (positions_fn() if positions_fn else [])
                    if str(p.get("strategy") or "").startswith("options")
@@ -302,6 +301,21 @@ def run_session(index: str = "NIFTY", lots: int = LOTS, short_off: int = 3,
                  + ", ".join("%s/%s" % (p.get("instrument"), p.get("strategy"))
                              for p in foreign))
             return "position-held"
+
+        # Re-resolve the Dhan token IMMEDIATELY before entry.  The broker caches
+        # whatever resolve_token() gave it at process start, and a worker idles
+        # for days between its own expiry days -- the NIFTY worker sits from one
+        # Tuesday to the next, and its cached token is long dead by then.  Until
+        # now the only reason entry still worked is that live_runner refreshed a
+        # shared token file every morning; with live_runner retired this is what
+        # keeps the book authenticated.  resolve_token() is a no-op when the
+        # token is healthy and mints a fresh one via TOTP when it has lapsed.
+        try:
+            _say("[HOLD] token before entry: "
+                 + ("ok" if ot.broker.connect() else str(ot.broker._auth_error)))
+        except Exception as e:
+            _say("[HOLD] token re-resolve failed: " + type(e).__name__
+                 + " " + str(e)[:90])
 
         plan = ot.select(force=True, short_off=short_off, wing=wing)
         if not plan.get("legs"):
