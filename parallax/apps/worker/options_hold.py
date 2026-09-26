@@ -341,7 +341,9 @@ def run_session(index: str = "NIFTY", lots: int = LOTS, short_off: int = 3,
             now = now_fn()
             # Do not mark outside the session.  The feed keeps answering after
             # the close, and a stale or zero book is not a price.
-            if not (now.weekday() < 5 and (9, 15) <= (now.hour, now.minute) <= (15, 30)):
+            # ...and stop a minute early: at 15:30 the contracts settle, so a
+            # mark taken then is a dead book, not a price.
+            if not (now.weekday() < 5 and (9, 15) <= (now.hour, now.minute) <= (15, 29)):
                 if ot.expiry_reached(now):
                     pass          # fall through: the expiry close still has to run
                 else:
@@ -367,8 +369,11 @@ def run_session(index: str = "NIFTY", lots: int = LOTS, short_off: int = 3,
                             format(int(ot.last_pnl), ","), prof * 100, credit,
                             100.0 * ot.last_pnl / maxl, format(int(maxl), ",")))
             if ot.expiry_reached(now):
-                _say("[HOLD] expiry reached - closing")
-                ot.close("expiry")
+                settle = ot.at_settlement(now)
+                _say("[HOLD] expiry reached - "
+                     + ("settling at 15:30, no orders sent" if settle
+                        else "overdue, flattening with orders"))
+                ot.close("expiry", settle=settle)
                 clear_state(state)
                 _say("[HOLD] done. journal: " + str(store.summary()))
                 return "expired"

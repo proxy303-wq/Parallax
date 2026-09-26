@@ -333,16 +333,29 @@ class ZeroDteCondor:
         except ValueError:
             return None
 
+    def at_settlement(self, now) -> bool:
+        """True AT the expiry moment: expiry day, at or after the 15:30 close.
+
+        These are cash-settled European index options, so a position carried to
+        the close settles automatically and there is nothing to trade.  That is
+        worth doing: measured over 71 NIFTY and 57 SENSEX expiries, carrying the
+        last 15 minutes is worth Rs 24,911 and Rs 32,872.  At 15:15 the legs
+        still hold 15 minutes of time value, and closing there buys it back.
+        """
+        d = self.expiry_date()
+        return d is not None and now.date() == d and (now.hour, now.minute) >= (15, 30)
+
     def expiry_reached(self, now) -> bool:
         """True once the contract has stopped trading.
 
-        On expiry day the exit is the 15:15 IST session close; on any later day
-        the position is overdue and is flattened immediately.
+        On expiry day the exit is the 15:30 IST close and the position SETTLES.
+        On any later day it is overdue and has to be flattened with orders
+        instead, because a contract that already settled cannot be closed.
         """
         d = self.expiry_date()
         if d is None:
             return False
-        return now.date() > d or (now.date() == d and (now.hour, now.minute) >= (15, 15))
+        return now.date() > d or self.at_settlement(now)
 
     def manage(self) -> str:
         val = self.value_now()
@@ -367,16 +380,23 @@ class ZeroDteCondor:
             return "tp"
         return "hold"
 
-    def close(self, reason: str) -> dict:
+    def close(self, reason: str, settle: bool = False) -> dict:
+        """Flatten the position, unless it is SETTLING.
+
+        settle=True is the 15:30 expiry settle: the exchange has already closed
+        the contracts, so there is nothing to send.  Placing the four closing
+        orders then would either fail or, worse, deal into the next expiry.
+        """
         if not self.active:
             return {}
         plan = self.active["plan"]
-        for name, l in plan["legs"].items():
-            side = "BUY" if name.endswith("short") else "SELL"
-            c = OptionContract(symbol=self.symbol, strike=l["strike"], expiry="",
-                               option_type=l["type"], lot_size=self.lot,
-                               security_id=l["security_id"], trading_symbol="")
-            self.broker.place_option_order(c, side, self.lots, "MARKET")
+        if not settle:
+            for name, l in plan["legs"].items():
+                side = "BUY" if name.endswith("short") else "SELL"
+                c = OptionContract(symbol=self.symbol, strike=l["strike"], expiry="",
+                                   option_type=l["type"], lot_size=self.lot,
+                                   security_id=l["security_id"], trading_symbol="")
+                self.broker.place_option_order(c, side, self.lots, "MARKET")
         pnl = self.last_pnl if self.last_pnl else plan["credit"] * self.lot * self.lots
         if reason == "tp":
             pnl = self.tp * plan["credit"] * self.lot * self.lots
@@ -392,7 +412,7 @@ class ZeroDteCondor:
         # erase the crypto workers' open positions from the dashboard
         self.journal.clear_position(self.instrument_name)
         self._stop_feed()
-        self._say(f"[0DTE] CLOSE {reason} pnl Rs{pnl:,.0f}")
+        self._say(f"[0DTE] {'SETTLE' if settle else 'CLOSE'} {reason} pnl Rs{pnl:,.0f}")
         self.active = None
         return {"reason": reason, "pnl": round(pnl, 2)}
 
