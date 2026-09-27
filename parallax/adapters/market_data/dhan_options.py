@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import csv
 import json
+import time
+import urllib.error
 import urllib.request
 from datetime import datetime
 
@@ -42,13 +44,89 @@ def underlying_id(symbol: str) -> int:
     return UNDERLYING_IDS.get(str(symbol).upper(), 13)
 
 
-def _post(path: str, payload: dict, token: str, client_id: str, timeout: int = 25) -> dict:
-    req = urllib.request.Request(
-        BASE + path, data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "Accept": "application/json",
-                 "access-token": token, "client-id": client_id}, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode())
+#: Dhan answers a RATE-LIMITED option-chain request with HTTP 401 and
+#: {"Data":{"810":"ClientId is invalid"}} -- not a 429 -- so a naive caller reads
+#: it as a dead token and gives up on the entry.
+#:
+#: Measured on the VPS 2026-09-26: an afternoon of heavy use (a 966-call ladder
+#: fetch) left /optionchain returning that 401 for hours, and the same token and
+#: account kept working on /charts/* the whole time.  About 45 seconds of quiet
+#: restored it.  Retrying with backoff turns "chain unavailable" -- which the
+#: worker reports as a silent no-trade -- into a slightly slower entry.
+#:
+#: The client-id HEADER is also load-bearing: without it every call here 401s
+#: even when the token is perfectly good.
+RATE_LIMIT_CODES = (401, 429)
+BACKOFF_S = (5.0, 20.0, 45.0)
+
+
+def _post(path: str, payload: dict, token: str, client_id: str, timeout: int = 25,
+          retries: int = 3) -> dict:
+    for attempt in range(retries):
+        req = urllib.request.Request(
+            BASE + path, data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json", "Accept": "application/json",
+                     "access-token": token, "client-id": client_id}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode()[:200]
+            except Exception:
+                pass
+            if e.code in RATE_LIMIT_CODES and attempt < retries - 1:
+                time.sleep(BACKOFF_S[min(attempt, len(BACKOFF_S) - 1)])
+                continue
+            raise urllib.error.HTTPError(e.url, e.code, body or str(e.reason),
+                                         e.headers, None)
+
+
+def atm_straddle(symbol: str, expiry: str | None = None, token: str | None = None,
+                 client_id: str | None = None) -> dict | None:
+    """ATM straddle = the market's own expected move to expiry.
+
+    CE + PE at the strike nearest spot.  No vol model is involved, which is the
+    point: the straddle IS the expectation, and the shape research normalises
+    short distance by it (sigma_room = short distance / straddle).  A 5-strike
+    offset is a different bet on every index, and this is the ruler that shows
+    by how much.
+    """
+    chain = fetch_option_chain(symbol, expiry=expiry, token=token, client_id=client_id)
+    if not chain or not chain.get("rows"):
+        return None
+    from parallax.config.indices import spec as _spec
+    step = float(_spec(symbol).step)
+    spot = float(chain["spot"])
+    atm = round(spot / step) * step
+    ce = pe = None
+    for r in chain["rows"]:
+        if abs(float(r["strike"]) - atm) > 1e-6:
+            continue
+        if r["option_type"] == "CE":
+            ce = r
+        elif r["option_type"] == "PE":
+            pe = r
+    if not ce or not pe:
+        return None
+    strad = float(ce["ltp"]) + float(pe["ltp"])
+    if strad <= 0:
+        return None
+    return {
+        "symbol": str(symbol).upper(), "expiry": str(chain.get("expiry") or expiry or ""),
+        "spot": spot, "atm": atm, "ce": float(ce["ltp"]), "pe": float(pe["ltp"]),
+        "straddle": strad, "move_pct": 100.0 * strad / spot,
+        "iv": (float(ce["iv"]) + float(pe["iv"])) / 2.0,
+    }
+
+
+def sigma_room(symbol: str, short_off: int, straddle: float) -> float:
+    """How far the sold strikes sit, in units of the market's expected move."""
+    from parallax.config.indices import spec as _spec
+    if not straddle or straddle <= 0:
+        return 0.0
+    return (int(short_off) * float(_spec(symbol).step)) / float(straddle)
 
 
 def _auth(token: str | None, client_id: str | None):
