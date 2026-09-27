@@ -37,6 +37,12 @@ PAUSE_S = 20.0
 UNIT_DIR = "/etc/systemd/system"
 #: blank line between indices, for scannability on a phone
 OUT_GAP = True
+#: An ATM straddle above this fraction of spot is a corrupt print, not a market.
+#: Any real index straddle runs 0.5-3% of spot whatever the expiry; BANKEX read
+#: 58,570 against a 62,833 spot because its ATM strike serves a bad print (the
+#: 62,800 PE quoted 55,003).  Reporting that as an expected move would be worse
+#: than reporting nothing, so it is flagged instead of used.
+MAX_STRADDLE_PCT = 10.0
 
 
 def _num(x) -> str:
@@ -95,6 +101,11 @@ def build_report(today: datetime.date | None = None, pause: float = PAUSE_S,
 
         tag = "   <== trades today" if sym == trading else ""
         straddle = float(f["straddle"])
+        pct = 100.0 * straddle / float(f["spot"]) if float(f["spot"]) else 0.0
+        if pct > MAX_STRADDLE_PCT:
+            out.append("%-9s  spot %s   straddle %s = %.0f%% of spot - bad chain,"
+                       " skipped%s" % (sym, _num(f["spot"]), _num(straddle), pct, tag))
+            continue
         move_p50 = None
         if f.get("calibrated"):
             rb, mb = f["range_bands"], f["move_bands"]

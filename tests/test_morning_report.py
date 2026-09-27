@@ -72,6 +72,24 @@ def test_a_futures_day_says_so():
     assert "trades today" not in txt
 
 
+def test_a_corrupt_straddle_is_flagged_not_reported():
+    """BANKEX really serves this: 58,570 straddle on a 62,833 spot."""
+    def bad(sym):
+        if sym == "BANKEX":
+            return {"spot": 62833.0, "straddle": 58570.0, "step": 100.0,
+                    "calibrated": False}
+        return _fake(sym)
+    txt = build_report(today=D, pause=0, forecast_fn=bad, live=LIVE)
+    line = [l for l in txt.splitlines() if l.startswith("BANKEX")][0]
+    assert "bad chain, skipped" in line
+    assert "58,570 = 93% of spot" in line   # named as the reason, not used as a forecast
+
+
+def test_a_sane_straddle_is_not_flagged():
+    txt = build_report(today=D, pause=0, forecast_fn=_fake, live=LIVE)
+    assert "bad chain" not in txt
+
+
 def test_it_never_raises_on_a_broken_forecast():
     def boom(sym):
         raise RuntimeError("dhan 810")
