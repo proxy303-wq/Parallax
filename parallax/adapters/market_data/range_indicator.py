@@ -93,22 +93,37 @@ def forecast(symbol: str, expiry: str | None = None) -> dict | None:
     return out
 
 
-def prob_hold(symbol: str, short_pts: float, straddle: float) -> float | None:
-    """P(the index settles INSIDE +-short_pts), from the calibrated table."""
+def prob_move_within(symbol: str, pts: float, straddle: float) -> float | None:
+    """P(|net move| <= pts), from the calibrated table."""
     move_x, _ = calibrate(symbol)
     if not move_x or straddle <= 0:
         return None
-    return _interp(move_x, float(short_pts) / float(straddle))
+    return _interp(move_x, float(pts) / float(straddle))
 
 
-def strikes_for_prob(symbol: str, straddle: float, target: float) -> int | None:
-    """The smallest strike offset whose modelled win rate clears target."""
+def prob_profit(symbol: str, short_pts: float, credit_pts: float,
+                straddle: float) -> float | None:
+    """P(the condor finishes in profit).
+
+    NOT the same as P(the shorts hold).  A condor is profitable out to its
+    BREAK-EVEN, which is short distance PLUS the credit collected -- and that
+    difference is the whole point of selling a spread rather than a naked
+    option.  Using short_pts alone under-predicts the win rate by the credit:
+    SENSEX 5/-3 reads 0.65 that way against 0.74 measured, and 0.74 once the
+    ~100-point credit is added back.
+    """
+    return prob_move_within(symbol, float(short_pts) + float(credit_pts), straddle)
+
+
+def strikes_for_profit(symbol: str, straddle: float, credit_pts: float,
+                       target: float) -> int | None:
+    """The smallest strike offset whose modelled PROFIT rate clears target."""
     from parallax.config.indices import spec as _spec
     move_x, _ = calibrate(symbol)
     if not move_x or straddle <= 0:
         return None
     step = float(_spec(symbol).step)
     for so in range(1, 21):
-        if _interp(move_x, (so * step) / straddle) >= target:
+        if _interp(move_x, (so * step + float(credit_pts)) / straddle) >= target:
             return so
     return None
