@@ -96,17 +96,26 @@ def sessions(ladder):
     return out
 
 
-def legs_at(row, strikes_off, step):
-    """Value of fixed strikes, re-expressed against this bar's own ATM."""
+def legs_at(row, strikes, step):
+    """Value of FIXED strikes, re-expressed against this bar's own ATM.
+
+    The ladder stores every option at an offset from the CURRENT atm, so a fixed
+    strike drifts to a different key as the index moves.  The first version of
+    this function took offsets and rebuilt the key from the new atm, which
+    reduces to reading the same offset - i.e. it re-struck the position to the
+    new ATM at every bar.  That is not a fixed position at all, it is a rolling
+    ATM straddle, and on a decaying instrument it produced a beautiful and
+    entirely fake t of -21.
+    """
     atm = round(row["spot"] / step) * step
     tot = 0.0
-    for off, ot in strikes_off:
-        key = round((atm + off) / step) * step - atm
+    for strike, ot in strikes:
+        key = round((strike - atm) / step) * step
         t = (row.get(ot) or {}).get(key)
         if t is None:
-            return None, atm
+            return None
         tot += float(t[0])
-    return tot, atm
+    return tot
 
 
 def measure(ladder, symbol="NIFTY", entry_local=1, wing_strikes=2,
@@ -138,11 +147,12 @@ def measure(ladder, symbol="NIFTY", entry_local=1, wing_strikes=2,
 
         out = {"day": day, "dte": dte, "move": move, "trail": trail,
                "atm_in": atm_in}
-        for tag, offs in (("strad", [(0.0, "CALL"), (0.0, "PUT")]),
-                          ("strang", [(wing_strikes * step, "CALL"),
-                                      (-wing_strikes * step, "PUT")])):
-            v_in, _ = legs_at(rin, offs, step)
-            v_out, _ = legs_at(rout, offs, step)
+        for tag, strikes in (
+                ("strad", [(atm_in, "CALL"), (atm_in, "PUT")]),
+                ("strang", [(atm_in + wing_strikes * step, "CALL"),
+                            (atm_in - wing_strikes * step, "PUT")])):
+            v_in = legs_at(rin, strikes, step)
+            v_out = legs_at(rout, strikes, step)
             if v_in is None or v_out is None:
                 out[tag] = None
                 continue
