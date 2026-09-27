@@ -1,0 +1,15 @@
+[Unit]
+Description=Fire the PARALLAX morning range report at 09:20 IST
+
+[Timer]
+# 03:50 UTC == 09:20 IST, the minute the calibration table is keyed to.
+# UTC rather than local so the DST switch on the host cannot move it.
+OnCalendar=Mon..Fri *-*-* 03:50:00 UTC
+AccuracySec=5s
+# not Persistent: a report built from a stale straddle read hours late is worse
+# than no report, because the table assumes the 09:20 bar.
+Persistent=false
+Unit=parallax-report.service
+
+[Install]
+WantedBy=timers.target

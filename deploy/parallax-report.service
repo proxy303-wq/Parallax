@@ -1,0 +1,11 @@
+[Unit]
+Description=PARALLAX morning range report to Telegram (09:20 IST)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/parallax
+EnvironmentFile=/opt/parallax/.env
+ExecStart=/opt/parallax/.venv/bin/python -m parallax.apps.ops.morning_report
+TimeoutStartSec=300
