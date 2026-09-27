@@ -241,6 +241,101 @@ def run(symbol="NIFTY", codes=(1, 2, 3, 4), min_dte=20, max_dte=45,
     return out
 
 
+ATM_KINDS = ("call", "put", "straddle")
+
+
+def _atm_legs(kind, atm):
+    if kind == "call":
+        return [(atm, "CALL", 1.0)]
+    if kind == "put":
+        return [(atm, "PUT", 1.0)]
+    return [(atm, "CALL", 1.0), (atm, "PUT", 1.0)]
+
+
+def run_atm(symbol="NIFTY", codes=(1, 2, 3, 4), min_dte=20, max_dte=45,
+            kinds=ATM_KINDS, hold=2, entry_local=1, cost_pct=0.005,
+            start="2025-01-05", end="2026-09-01", split=None, progress=print):
+    """Buy the ATM option outright and hold it.
+
+    WHY ATM-ONLY IS THE RIGHT MEASUREMENT HERE.  A fixed strike's offset in the
+    ladder drifts by the index move, and the ladder reaches only +-10 strikes.  A
+    SPREAD therefore loses whichever leg leaves the window first, and that is a
+    different leg in each direction: a call spread drops on big DOWN days and a
+    put spread on big UP days.  Measured, that kept the losing tail for one side
+    and threw it away for the other, which is how a +21.7 point "put edge" got
+    invented out of nothing.
+
+    An ATM-only position holds a single leg at offset 0, so the only constraint
+    is |move| <= 10 strikes in EITHER direction.  Symmetric, and twice the room -
+    which matters because a long option's entire payoff lives in the tail that
+    the spread was busy discarding.
+    """
+    from parallax.apps.research.buy_signal import fetch_bars, session_spans
+    from parallax.config.indices import spec
+    step = float(spec(symbol).step)
+
+    bars = fetch_bars(symbol, start, end, progress=lambda m: None)
+    spans = session_spans(bars)
+    sessions = [d for d, _, _ in spans]
+    expiries = expiry_days(sessions, 1 if symbol in ("NIFTY", "BANKNIFTY",
+                                                     "FINNIFTY") else 3)
+    ladders = load_ladders(symbol, codes, start, end, progress)
+    if not ladders:
+        raise SystemExit("no ladders cached for %s" % symbol)
+
+    panels = {}
+
+    def panel_for(target):
+        if target not in panels:
+            p = stitch(ladders, expiries, target)
+            panels[target] = (p, rows_by_day(p))
+        return panels[target]
+
+    out, dtes, tried, dropped = {}, [], 0, 0
+    for i, (day, i0, i1) in enumerate(spans):
+        j = i + hold
+        if j >= len(spans):
+            continue
+        tgt = _target_expiry(expiries, day, min_dte, max_dte)
+        if tgt is None:
+            continue
+        tried += 1
+        p, pday = panel_for(tgt)
+        ins = pday.get(day) or []
+        outs = pday.get(spans[j][0]) or []
+        if not ins or not outs:
+            continue
+        rin = p[ins[min(entry_local, len(ins) - 1)]]
+        rout = p[outs[-1]]
+        atm = atm_of(rin, step)
+
+        # one identical sample across every structure, as in run()
+        vals, ok = {}, True
+        for kind in kinds:
+            legs = _atm_legs(kind, atm)
+            vi = leg_value(rin, legs, step)
+            vo = leg_value(rout, legs, step)
+            if vi is None or vo is None or vi <= 0:
+                ok = False
+                break
+            vals[kind] = (vi, vo)
+        if not ok:
+            dropped += 1
+            continue
+        dtes.append((tgt - day).days)
+        half = "all" if split is None else ("train" if day < split else "test")
+        for kind, (vi, vo) in vals.items():
+            debit = vi * (1.0 + cost_pct)
+            pnl = vo * (1.0 - cost_pct) - debit
+            out.setdefault((kind, 0, half), []).append((pnl, debit))
+    if dtes:
+        progress("  %d entry days tried, %d measured, %d dropped off the ceiling,"
+                 " entry DTE %.0f-%.0f (med %.0f)"
+                 % (tried, len(dtes), dropped, min(dtes), max(dtes),
+                    sorted(dtes)[len(dtes) // 2]))
+    return out
+
+
 def show(out, kinds=("call", "put"), widths=(2, 4, 5), halves=("all",)):
     for kind in kinds:
         for w in widths:
