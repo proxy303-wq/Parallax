@@ -266,9 +266,11 @@ def show(rows, tag, label):
 
 def main() -> None:
     symbol = str(arg("--index", "NIFTY")).upper()
-    print("loading %s ladder" % symbol, flush=True)
+    cost = float(arg("--cost", str(COST_PCT)))
+    print("loading %s ladder (cost %.3f%% per side)" % (symbol, cost * 100),
+          flush=True)
     lad = load_ladder(symbol)
-    rows = measure(lad, symbol)
+    rows = measure(lad, symbol, cost_pct=cost)
 
     usable = [r for r in rows if r.get("strad") is not None and r.get("trail")]
     print("\nusable sessions: %d\n" % len(usable))
@@ -309,7 +311,7 @@ def main() -> None:
 
     print("\n=== holding curve: does ANY intraday horizon pay? ===")
     print("(mean straddle P&L in points, exited this many 5-min bars after entry)")
-    curve = holding_curve(lad, symbol)
+    curve = holding_curve(lad, symbol, cost_pct=cost)
     for o in (3, 6, 12, 24, 48, 999):
         v = curve.get(o) or []
         if not v:
@@ -322,7 +324,7 @@ def main() -> None:
 
     print("\n=== the plan's own structure: debit spreads, priced off the chain ===")
     print("(long ATM, short W strikes out; entered 09:20, exited at the close)")
-    sp = spread_ev(lad, symbol)
+    sp = spread_ev(lad, symbol, cost_pct=cost)
     for kind in ("call", "put"):
         for w in (2, 4, 5):
             v = sp.get((kind, w)) or []
