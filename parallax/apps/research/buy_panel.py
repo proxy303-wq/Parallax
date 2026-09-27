@@ -181,7 +181,7 @@ def run(symbol="NIFTY", codes=(1, 2, 3, 4), min_dte=20, max_dte=45,
             panels[target] = (p, rows_by_day(p))
         return panels[target]
 
-    out, dtes, tried = {}, [], 0
+    out, dtes, tried, dropped = {}, [], 0, 0
     for i, (day, i0, i1) in enumerate(spans):
         j = i + hold
         if j >= len(spans):
@@ -198,8 +198,19 @@ def run(symbol="NIFTY", codes=(1, 2, 3, 4), min_dte=20, max_dte=45,
         t_in = ins[min(entry_local, len(ins) - 1)]
         t_out = outs[-1]
         rin, rout = p[t_in], p[t_out]
-        dtes.append((tgt - day).days)
         atm = atm_of(rin, step)
+
+        # EVERY VARIANT IS MEASURED ON ONE IDENTICAL SAMPLE, or an entry is
+        # dropped for all of them.  This is not tidiness, it is the difference
+        # between a result and an artefact: the ladder only reaches +-10 strikes,
+        # and a held position drifts toward that ceiling, so the leg that leaves
+        # the window is dropped - and it is a DIFFERENT leg in each direction.
+        # Measured here: on the 48 entries where only the put spread resolved the
+        # index fell 344 points on average, and on the 45 where only the call
+        # spread resolved it rose 367.  Per-variant dropping therefore kept the
+        # big down days for the puts and threw away the big up days, and reported
+        # a +21.7 point "edge" that was pure selection.
+        vals, ok = {}, True
         for kind in kinds:
             ot = "CALL" if kind == "call" else "PUT"
             sgn = 1.0 if kind == "call" else -1.0
@@ -208,15 +219,24 @@ def run(symbol="NIFTY", codes=(1, 2, 3, 4), min_dte=20, max_dte=45,
                 vi = leg_value(rin, legs, step)
                 vo = leg_value(rout, legs, step)
                 if vi is None or vo is None or vi <= 0:
-                    continue
-                debit = vi * (1.0 + cost_pct)
-                pnl = vo * (1.0 - cost_pct) - debit
-                half = "all" if split is None else (
-                    "train" if day < split else "test")
-                out.setdefault((kind, w, half), []).append((pnl, debit))
+                    ok = False
+                    break
+                vals[(kind, w)] = (vi, vo)
+            if not ok:
+                break
+        if not ok:
+            dropped += 1
+            continue
+        dtes.append((tgt - day).days)
+        half = "all" if split is None else ("train" if day < split else "test")
+        for (kind, w), (vi, vo) in vals.items():
+            debit = vi * (1.0 + cost_pct)
+            pnl = vo * (1.0 - cost_pct) - debit
+            out.setdefault((kind, w, half), []).append((pnl, debit))
     if dtes:
-        progress("  %d entry days tried, %d resolved, entry DTE %.0f-%.0f (med %.0f)"
-                 % (tried, len(dtes), min(dtes), max(dtes),
+        progress("  %d entry days tried, %d measured, %d dropped off the ladder "
+                 "ceiling, entry DTE %.0f-%.0f (med %.0f)"
+                 % (tried, len(dtes), dropped, min(dtes), max(dtes),
                     sorted(dtes)[len(dtes) // 2]))
     return out
 
