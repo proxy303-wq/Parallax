@@ -136,17 +136,26 @@ def main() -> None:
     print(msg, flush=True)
     if "--dry" in sys.argv:
         return
+    # TelegramBot.send() swallows its exception and returns False, so an
+    # unchecked call cannot tell a delivered report from a rejected one.  The
+    # exit code is what systemd records, so a dead send has to fail loudly.
     try:
         from parallax.adapters.telegram import TelegramBot
         tb = TelegramBot()
-        if tb.configured:
-            tb.send(msg)
-            print("[report] sent to telegram", flush=True)
-        else:
+        if not tb.configured:
             print("[report] telegram not configured - printed only", flush=True)
+            sys.exit(1)
+        if not tb.send(msg):
+            print("[report] TELEGRAM SEND FAILED - report only in this journal",
+                  flush=True)
+            sys.exit(1)
+    except SystemExit:
+        raise
     except Exception as e:
         print("[report] telegram failed: %s %s" % (type(e).__name__, str(e)[:80]),
               flush=True)
+        sys.exit(1)
+    print("[report] sent to telegram", flush=True)
 
 
 if __name__ == "__main__":

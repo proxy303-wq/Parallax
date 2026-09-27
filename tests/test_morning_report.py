@@ -1,6 +1,9 @@
 """The morning report's shape, without touching the network."""
 import datetime
 
+import pytest
+
+import parallax.apps.ops.morning_report as mr
 from parallax.apps.ops.morning_report import build_report
 
 D = datetime.date(2026, 9, 29)          # a last-Tuesday: BANKNIFTY, uncalibrated
@@ -88,6 +91,38 @@ def test_a_corrupt_straddle_is_flagged_not_reported():
 def test_a_sane_straddle_is_not_flagged():
     txt = build_report(today=D, pause=0, forecast_fn=_fake, live=LIVE)
     assert "bad chain" not in txt
+
+
+class _Bot:
+    def __init__(self, ok, configured=True):
+        self.ok, self.configured = ok, configured
+
+    def send(self, text):
+        return self.ok
+
+
+def _run_main(monkeypatch, **kw):
+    import parallax.adapters.telegram as tg
+    monkeypatch.setattr(tg, "TelegramBot", lambda: _Bot(**kw))
+    monkeypatch.setattr(mr, "build_report", lambda: "report")
+    mr.main()
+
+
+def test_a_rejected_send_fails_the_service(monkeypatch):
+    """send() returns False rather than raising, so this is the only signal."""
+    with pytest.raises(SystemExit) as e:
+        _run_main(monkeypatch, ok=False)
+    assert e.value.code == 1
+
+
+def test_an_unconfigured_bot_fails_the_service(monkeypatch):
+    with pytest.raises(SystemExit) as e:
+        _run_main(monkeypatch, ok=True, configured=False)
+    assert e.value.code == 1
+
+
+def test_a_delivered_report_exits_clean(monkeypatch):
+    _run_main(monkeypatch, ok=True)          # no SystemExit
 
 
 def test_it_never_raises_on_a_broken_forecast():
