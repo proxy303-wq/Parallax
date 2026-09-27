@@ -78,9 +78,21 @@ def fetch(tok, idx, off, otype, code, f, t, client_id=""):
     return {}
 
 
-def load(symbol, code, start="2025-01-05", end="2026-09-01", progress=print):
-    """{ts: {spot, CALL:{offset:(c,h,l)}, PUT:{...}}} at the given expiryCode."""
+def load(symbol, code, start="2025-01-05", end="2026-09-01", workers=6,
+         progress=print):
+    """{ts: {spot, CALL:{offset:(c,h,l)}, PUT:{...}}} at the given expiryCode.
+
+    FETCHED CONCURRENTLY, because one call takes ~16s against a ~30 day window
+    and serialising the whole thing is a nine-hour job.  Dhan caps the window at
+    about 30 days (60 and 90 both come back empty), so there is no way to buy the
+    time back with fewer, larger requests - only with parallelism.  Six workers
+    measured ~3.7s per call effective, with no rate-limit failures.
+
+    The cache is rewritten every 100 calls as well as at the end: a nine-hour
+    job that only saves on completion loses everything to one bad call.
+    """
     import pickle
+    from concurrent.futures import ThreadPoolExecutor
     from parallax.adapters.broker.dhan_auth import active_token
     from parallax.config.indices import spec
 
@@ -99,36 +111,52 @@ def load(symbol, code, start="2025-01-05", end="2026-09-01", progress=print):
     step = float(idx.step)
     offs = ["ATM"] + ["ATM%+d" % j for j in range(-MAX_OFF, MAX_OFF + 1) if j != 0]
     wins = windows(datetime.date.fromisoformat(start), datetime.date.fromisoformat(end))
-    byts: dict = {}
-    series = 0
+
+    tasks = []
     for off in offs:
+        n = 0 if off == "ATM" else int(off.replace("ATM", "").replace("+", ""))
         for ot in ("CALL", "PUT"):
-            n = 0 if off == "ATM" else int(off.replace("ATM", "").replace("+", ""))
             for f, t in wins:
-                d = fetch(tok, idx, off, ot, code, f, t, client_id)
-                ts = d.get("timestamp") or []
-                sp = d.get("spot") or []
-                cl = d.get("close") or []
-                hi = d.get("high") or []
-                lo = d.get("low") or []
-                for i, tv in enumerate(ts):
-                    if i >= len(cl) or i >= len(sp):
-                        break
-                    row = byts.setdefault(int(tv), {"spot": float(sp[i]),
-                                                    "CALL": {}, "PUT": {}})
-                    row[ot][n * step] = (float(cl[i]),
-                                         float(hi[i]) if i < len(hi) else float(cl[i]),
-                                         float(lo[i]) if i < len(lo) else float(cl[i]))
-                _t.sleep(0.1)
-            series += 1
-            if series % 8 == 0:
-                progress("  C%s %s series %d/%d, %d bars"
-                         % (code, symbol, series, len(offs) * 2, len(byts)))
-    try:
-        with open(cache, "wb") as fh:
-            pickle.dump(byts, fh)
-    except OSError:
-        pass
+                tasks.append((off, ot, n, f, t))
+
+    byts: dict = {}
+    done = {"n": 0}
+
+    def work(task):
+        off, ot, n, f, t = task
+        return n, ot, fetch(tok, idx, off, ot, code, f, t, client_id)
+
+    def absorb(n, ot, d):
+        ts = d.get("timestamp") or []
+        sp = d.get("spot") or []
+        cl = d.get("close") or []
+        hi = d.get("high") or []
+        lo = d.get("low") or []
+        for i, tv in enumerate(ts):
+            if i >= len(cl) or i >= len(sp):
+                break
+            row = byts.setdefault(int(tv), {"spot": float(sp[i]),
+                                            "CALL": {}, "PUT": {}})
+            row[ot][n * step] = (float(cl[i]),
+                                 float(hi[i]) if i < len(hi) else float(cl[i]),
+                                 float(lo[i]) if i < len(lo) else float(cl[i]))
+
+    def save():
+        try:
+            with open(cache, "wb") as fh:
+                pickle.dump(byts, fh)
+        except OSError:
+            pass
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for n, ot, d in ex.map(work, tasks):
+            absorb(n, ot, d)
+            done["n"] += 1
+            if done["n"] % 100 == 0:
+                progress("  C%s %s %d/%d calls, %d bars"
+                         % (code, symbol, done["n"], len(tasks), len(byts)))
+                save()
+    save()
     return byts
 
 
@@ -137,9 +165,12 @@ def main() -> None:
     codes = [c.strip() for c in str(arg("--code", "3")).split(",")]
     start = str(arg("--start", "2025-01-05"))
     end = str(arg("--end", "2026-09-01"))
+    workers = int(arg("--workers", "6"))
     for c in codes:
-        print("fetching %s expiryCode %s" % (symbol, c), flush=True)
-        d = load(symbol, c, start, end, progress=lambda m: print(m, flush=True))
+        print("fetching %s expiryCode %s (%d workers)" % (symbol, c, workers),
+              flush=True)
+        d = load(symbol, c, start, end, workers=workers,
+                 progress=lambda m: print(m, flush=True))
         print("  -> %d bars" % len(d), flush=True)
 
 
