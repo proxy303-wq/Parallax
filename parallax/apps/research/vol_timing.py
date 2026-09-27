@@ -166,6 +166,83 @@ def measure(ladder, symbol="NIFTY", entry_local=1, wing_strikes=2,
     return rows
 
 
+def legs_at_signed(row, legs, step):
+    """Net value of a signed leg set at FIXED strikes.  See legs_at."""
+    atm = round(row["spot"] / step) * step
+    tot = 0.0
+    for strike, ot, sgn in legs:
+        key = round((strike - atm) / step) * step
+        t = (row.get(ot) or {}).get(key)
+        if t is None:
+            return None
+        tot += sgn * float(t[0])
+    return tot
+
+
+def holding_curve(ladder, symbol="NIFTY", entry_local=1, cost_pct=COST_PCT,
+                  progress=print):
+    """Straddle P&L by how long it is held.  Theta is a clock, so the question
+    is whether ANY intraday horizon gets the buyer out ahead."""
+    from parallax.config.indices import spec
+    step = float(spec(symbol).step)
+    sess = sessions(ladder)
+    offs = (3, 6, 12, 24, 48, 999)
+    acc = {o: [] for o in offs}
+    for day, tss in sess:
+        if len(tss) < 20:
+            continue
+        i0 = min(entry_local, len(tss) - 1)
+        rin = ladder[tss[i0]]
+        atm = round(rin["spot"] / step) * step
+        legs = [(atm, "CALL"), (atm, "PUT")]
+        v_in = legs_at(rin, legs, step)
+        if v_in is None:
+            continue
+        entry = v_in * (1.0 + cost_pct)
+        for o in offs:
+            k = min(i0 + o, len(tss) - 1)
+            v = legs_at(ladder[tss[k]], legs, step)
+            if v is not None:
+                acc[o].append(v * (1.0 - cost_pct) - entry)
+    progress("")
+    return acc
+
+
+def spread_ev(ladder, symbol="NIFTY", entry_local=1, cost_pct=COST_PCT,
+              progress=print):
+    """The plan's own structure: a debit spread, priced off the real chain.
+
+    A debit spread is long one option and SHORT another, so it collects part of
+    the variance risk premium back on the short leg.  That should make it lose
+    less than an outright - the question is whether it loses less than nothing.
+    """
+    from parallax.config.indices import spec
+    step = float(spec(symbol).step)
+    sess = sessions(ladder)
+    widths = (2, 4, 5)
+    out = {}
+    for day, tss in sess:
+        if len(tss) < 20:
+            continue
+        i0 = min(entry_local, len(tss) - 1)
+        rin, rout = ladder[tss[i0]], ladder[tss[-1]]
+        atm = round(rin["spot"] / step) * step
+        for w in widths:
+            for kind, ot in (("call", "CALL"), ("put", "PUT")):
+                sgn = 1.0 if kind == "call" else -1.0
+                far = atm + sgn * w * step
+                legs = [(atm, ot, 1.0), (far, ot, -1.0)]
+                v_in = legs_at_signed(rin, legs, step)
+                v_out = legs_at_signed(rout, legs, step)
+                if v_in is None or v_out is None or v_in <= 0:
+                    continue
+                debit = v_in * (1.0 + cost_pct)
+                out.setdefault((kind, w), []).append(
+                    (v_out * (1.0 - cost_pct) - debit, debit))
+    progress("")
+    return out
+
+
 def _stat(vals):
     n = len(vals)
     if n < 2:
@@ -229,6 +306,36 @@ def main() -> None:
         for lab, part in (("cheap", sub[:k]), ("mid", sub[k:2 * k]),
                           ("rich", sub[2 * k:])):
             show(part, "strad", "%s / %s" % (name, lab))
+
+    print("\n=== holding curve: does ANY intraday horizon pay? ===")
+    print("(mean straddle P&L in points, exited this many 5-min bars after entry)")
+    curve = holding_curve(lad, symbol)
+    for o in (3, 6, 12, 24, 48, 999):
+        v = curve.get(o) or []
+        if not v:
+            continue
+        s = _stat(v)
+        label = "to the close" if o == 999 else "+%d min" % (o * 5)
+        print("  %-14s n=%-4d mean %+7.1f  sd %6.1f  win %4.1f%%  t %+5.2f"
+              % (label, s[3], s[0], s[1],
+                 100.0 * sum(1 for x in v if x > 0) / s[3], s[2]))
+
+    print("\n=== the plan's own structure: debit spreads, priced off the chain ===")
+    print("(long ATM, short W strikes out; entered 09:20, exited at the close)")
+    sp = spread_ev(lad, symbol)
+    for kind in ("call", "put"):
+        for w in (2, 4, 5):
+            v = sp.get((kind, w)) or []
+            if not v:
+                continue
+            pnl = [p for p, _ in v]
+            deb = [d for _, d in v]
+            s = _stat(pnl)
+            md = sum(deb) / len(deb)
+            print("  long %-4s spread %d strikes wide  n=%-4d mean debit %6.1f "
+                  "-> EV %+6.1f pts (%+6.1f%% of debit)  win %4.1f%%  t %+5.2f"
+                  % (kind, w, len(pnl), md, s[0], 100.0 * s[0] / md,
+                     100.0 * sum(1 for p in pnl if p > 0) / len(pnl), s[2]))
 
     print("\n=== did the move beat what was paid for it? ===")
     for lo, hi, name in ((0, 0, "0 dte"), (1, 4, "1-4 dte"), (5, 9, "5+ dte")):
