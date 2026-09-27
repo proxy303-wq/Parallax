@@ -232,9 +232,27 @@ def test_the_wait_to_the_next_session_is_sliced_and_rereads_the_clock():
 
 
 # ---- the holder's own contract, as the supervisor calls it ---------------
+class _FakeBroker:
+    """The parts of DhanBroker that run_session touches before it orders.
+
+    It used to be faked as None, which worked only because the one call site -
+    the token re-resolve - wrapped it in try/except.  The holder now also reads
+    the mode off the broker at entry, so the fake has to carry dry_run like the
+    real thing does.
+    """
+
+    def __init__(self, dry_run=True):
+        self.dry_run = dry_run
+        self._auth_error = None
+
+    def connect(self):
+        return True
+
+
 class _FakeCondor:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
+        self.broker = kwargs.get("broker")
         self.active = None
         self.lot = 65
         self.step = 50.0
@@ -252,7 +270,7 @@ def offline_holder(monkeypatch, tmp_path):
     monkeypatch.setattr(live, "ZeroDteCondor", _FakeCondor)
     monkeypatch.setattr(store, "JournalStore",
                         lambda *a, **k: type("S", (), {"mode": lambda s: "paper"})())
-    monkeypatch.setattr(options_hold, "DhanBroker", lambda *a, **k: None)
+    monkeypatch.setattr(options_hold, "DhanBroker", _FakeBroker)
     monkeypatch.setattr(options_hold, "_say", lambda msg: None)
     return str(tmp_path / "options_hold_NIFTY.json")
 
@@ -301,7 +319,7 @@ def _offline_holder_with(monkeypatch, rows):
     monkeypatch.setattr(store, "JournalStore", lambda *a, **k: type(
         "S", (), {"mode": lambda s: "paper",
                   "positions": lambda s: rows})())
-    monkeypatch.setattr(options_hold, "DhanBroker", lambda *a, **k: None)
+    monkeypatch.setattr(options_hold, "DhanBroker", _FakeBroker)
     monkeypatch.setattr(options_hold, "_say", lambda msg: None)
 
 

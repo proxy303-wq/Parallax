@@ -227,6 +227,8 @@ def run_session(index: str = "NIFTY", lots: int = LOTS, short_off: int = 3,
     state = state or os.path.join(REPO, "options_hold_%s.json" % index)
     instrument = instrument or ("%s 0DTE" % index)
     store = JournalStore()
+    # Seed value for the broker built just below.  It is RE-READ at entry (see
+    # below), because this process outlives any single mode.
     dry = store.mode() != "live"
     st = load_state(state)
     if st and st.get("plan"):
@@ -301,6 +303,20 @@ def run_session(index: str = "NIFTY", lots: int = LOTS, short_off: int = 3,
                  + ", ".join("%s/%s" % (p.get("instrument"), p.get("strategy"))
                              for p in foreign))
             return "position-held"
+
+        # Re-read the MODE here, for the same reason the token is re-resolved
+        # here.  These workers are long-lived - Restart=always, and each idles
+        # days between its own expiry days - so a mode captured at process start
+        # meant the dashboard's LIVE switch changed nothing: the button looked
+        # like it worked while the book kept simulating, and only a manual
+        # restart of four services made it real.  Orders are sent a few lines
+        # below, so this is the moment to ask.
+        dry = store.mode() != "live"
+        ot.broker.dry_run = dry
+        _say("[HOLD] mode %s - orders %s" % (
+            "PAPER" if dry else "LIVE",
+            "will be simulated locally" if dry
+            else "will go to the real Dhan account"))
 
         # Re-resolve the Dhan token IMMEDIATELY before entry.  The broker caches
         # whatever resolve_token() gave it at process start, and a worker idles

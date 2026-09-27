@@ -30,10 +30,11 @@ th{color:#8b949e;font-weight:500}.tag{padding:2px 8px;border-radius:10px;font-si
 .opt{background:#8957e522;color:#bc8cff}.stk{background:#3fb95022;color:#3fb950}
 .mode{padding:4px 12px;border-radius:12px;font-size:12px;font-weight:700;letter-spacing:1px}
 .mode.paper{background:#d2992222;color:#d29922}
-.mode.demo{background:#1f6feb22;color:#58a6ff}
 .mode.live{background:#f8514922;color:#f85149}
 .btn{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px}
 .btn:hover{border-color:#58a6ff;color:#58a6ff}
+.btn.live{background:#f85149;border-color:#f85149;color:#fff;font-weight:600}
+.btn.live:hover{background:#da3633;color:#fff}
 """
 
 
@@ -60,18 +61,24 @@ def _page(title, active, body):
                         ("Stock Options", "/stock-options", "stock-options")))
     mode = store.mode()
     nxt = store.next_mode()
+    going_live = nxt == "live"
+    # Going live is the one irreversible-ish click on this page and the page has
+    # no login, so it is the one that asks first.
+    ask = (' onclick="return confirm(&quot;Send real orders to the Dhan account?&quot;)"'
+           if going_live else "")
     toggle = ("<form method='post' action='/mode' style='margin:0'>"
               f"<input type='hidden' name='mode' value='{nxt}'>"
-              f"<button class='btn'>Switch to {nxt.upper()}</button></form>")
+              f"<button class='btn{' live' if going_live else ''}'{ask}>"
+              f"Switch to {nxt.upper()}</button></form>")
     warn = ""
     if mode == "live":
         warn = ("<div class='card' style='border-color:#f85149'>"
                 "<b style='color:#f85149'>LIVE MODE</b> - orders are sent to the real "
-                "venue with real money.</div>")
-    elif mode == "demo":
-        warn = ("<div class='card' style='border-color:#1f6feb'>"
-                "<b style='color:#58a6ff'>DEMO MODE</b> - orders go to the Delta "
-                "testnet (fake money, real order flow).</div>")
+                "Dhan account with real money.</div>")
+    else:
+        warn = ("<div class='card'>"
+                "<b style='color:#d29922'>PAPER MODE</b> - orders are simulated "
+                "locally and never reach Dhan.</div>")
     head = ("<div class='hdr'><h1>PARALLAX</h1>"
             "<div style='display:flex;gap:10px;align-items:center'>"
             f"<span class='mode {mode}'>{mode.upper()}</span>{toggle}</div></div>"
@@ -254,9 +261,34 @@ def stock_options():
 
 
 
+def announce_mode(mode: str) -> bool:
+    """Tell Telegram whenever the mode moves.  Best-effort: a mode change must
+    never fail because the bot is down."""
+    try:
+        from parallax.adapters.telegram import TelegramBot
+        tb = TelegramBot()
+        if not tb.configured:
+            return False
+        return bool(tb.send("PARALLAX mode -> %s\n%s" % (
+            mode.upper(),
+            "orders now go to the real Dhan account" if mode == "live"
+            else "orders are simulated locally")))
+    except Exception:
+        return False
+
+
 @app.post("/mode")
 def switch_mode(mode: str = Form(...)):
-    store.set_mode(mode)
+    """Flip PAPER/LIVE.
+
+    The value is echoed back by whatever posted it, so it is re-normalised by
+    set_mode() rather than trusted: an unknown value lands on paper, which is
+    the mode that cannot lose money.
+    """
+    was = store.mode()
+    now = store.set_mode(mode)
+    if now != was:
+        announce_mode(now)
     return RedirectResponse("/", status_code=303)
 
 

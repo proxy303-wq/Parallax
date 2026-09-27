@@ -49,7 +49,13 @@ class JournalStore:
             c.execute(db.upsert_sql("settings", ("key", "value"), ("key",)), (key, value))
 
     def mode(self) -> str:
-        return self.get_setting("mode", "paper")
+        """PAPER unless the setting explicitly says live.
+
+        Anything else - a legacy "demo", a typo, an empty row - reads as paper,
+        because the failure that matters here is silently sending real orders.
+        """
+        raw = str(self.get_setting("mode", "paper") or "").strip().lower()
+        return "live" if raw == "live" else "paper"
 
     def mode_is_live(self) -> bool:
         return self.mode() == "live"
@@ -72,22 +78,23 @@ class JournalStore:
             return float(dhan_equity or 0.0)
         return self.paper_capital()
 
-    # Three modes.  paper = local simulation, demo = Delta testnet, live = real money.
-    MODES = ("paper", "demo", "live")
+    # Two modes.  paper = orders simulated locally, live = orders go to the real
+    # Dhan account.  There was a third, "demo", which routed CRYPTO to the Delta
+    # testnet; crypto is stopped and Delta is out of the book, and for the
+    # options workers demo was identical to paper anyway.  Leaving it in the
+    # cycle made the dashboard offer "Switch to DEMO" - a state that changes
+    # nothing - and put the LIVE button one click further away than it belongs.
+    MODES = ("paper", "live")
 
     def set_mode(self, mode: str) -> str:
-        s = str(mode).lower()
-        m = "live" if s.startswith("live") else ("demo" if s.startswith("demo") else "paper")
+        # Exact match, not startswith: "livex" must not arm real orders.
+        m = "live" if str(mode).strip().lower() == "live" else "paper"
         self.set_setting("mode", m)
         return m
 
     def next_mode(self) -> str:
-        """Cycle paper -> demo -> live -> paper (what the dashboard button does)."""
-        try:
-            i = self.MODES.index(self.mode())
-        except ValueError:
-            i = 0
-        return self.MODES[(i + 1) % len(self.MODES)]
+        """The other mode - what the dashboard button offers."""
+        return "paper" if self.mode_is_live() else "live"
 
     def _init(self):
         db.ensure_schema(self.path)
