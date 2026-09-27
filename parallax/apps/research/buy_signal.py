@@ -313,6 +313,40 @@ def report(bars, spans, rows, label, horizon, pool):
                (sum(base) / len(base)) if base else 0.0, d or 0.0, ts))
 
 
+def dist(bars, spans, rows, label, horizon):
+    """Percentiles and exceedance, which is the question a debit spread asks.
+
+    A mean tells you almost nothing here.  A bull call spread pays a debit up
+    front and only profits once the index has travelled PAST break-even, so what
+    matters is the right tail - how often the move is bigger than the debit -
+    and how often it is a straightforward loss.
+    """
+    import math
+    sel = [r for r in rows if r.get(label)]
+    vals = [forward(bars, spans, r, horizon) for r in sel]
+    vals = [v for v in vals if v is not None]
+    if not vals:
+        return "  %-12s (no signals)" % label
+    v = sorted(vals)
+    n = len(v)
+    m = sum(v) / n
+    sd = math.sqrt(sum((q - m) ** 2 for q in v) / (n - 1)) if n > 1 else 0.0
+
+    def pc(p):
+        return v[min(n - 1, int(p * n))]
+
+    def over(x):
+        return 100.0 * sum(1 for q in v if q >= x) / n
+
+    def under(x):
+        return 100.0 * sum(1 for q in v if q <= x) / n
+
+    return ("  %-12s n=%-5d sd %6.1f  p10 %+7.1f p50 %+7.1f p90 %+7.1f  "
+            "| P>=+100 %5.1f%%  P>=+200 %5.1f%%  P<=-100 %5.1f%%"
+            % (label, n, sd, pc(0.10), pc(0.50), pc(0.90),
+               over(100), over(200), under(-100)))
+
+
 def main() -> None:
     from collections import Counter
     symbol = str(arg("--index", "NIFTY")).upper()
@@ -329,6 +363,7 @@ def main() -> None:
     print("regime mix:", dict(Counter(r["regime"] for r in rows)))
 
     for r in rows:
+        r["all"] = True
         r["bull_break"] = (r["regime"] == "BULL" and r["broke_up"]
                            and r["vol_ok"] and r["exp_ok"])
         r["bear_break"] = (r["regime"] == "BEAR" and r["broke_dn"]
@@ -340,6 +375,13 @@ def main() -> None:
         print("\n=== forward move, %s ===" % name)
         for lab in ("bull_regime", "bear_regime", "bull_break", "bear_break"):
             print(report(bars, spans, rows, lab, horizon, rows))
+
+    print("\n=== distribution: can a debit spread ever pay? ===")
+    for horizon, name in ((12, "60 min"), (999, "to the bell")):
+        print("\n-- %s --" % name)
+        print(dist(bars, spans, rows, "all", horizon))
+        for lab in ("bull_break", "bear_break"):
+            print(dist(bars, spans, rows, lab, horizon))
 
 
 if __name__ == "__main__":
