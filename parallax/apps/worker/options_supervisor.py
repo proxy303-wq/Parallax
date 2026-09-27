@@ -75,7 +75,7 @@ class OptionsSupervisor:
     """Runs the holder for exactly one index at a time, for the process lifetime."""
 
     def __init__(self, lots: int = 7, short_off: int = 3, wing: int = 3,
-                 state_dir: str = ".", poll: int = 30, enter_at: str = "09:20",
+                 state_dir: str = ".", poll: int = 30, enter_at: str = "09:30",
                  runner=None, plan_fn=options_plan, now_fn=None,
                  sleep_fn=time.sleep, retries: int = MAX_RETRIES,
                  retry_after: float = RETRY_AFTER):
@@ -219,7 +219,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--state-dir", dest="state_dir", default=".",
                    help="where options_hold_<INDEX>.json lives")
     p.add_argument("--poll", type=int, default=30)
-    p.add_argument("--enter-at", dest="enter_at", default="09:20",
+    p.add_argument("--enter-at", dest="enter_at", default="09:30",
                    help="entry window start, IST, HH:MM")
     return p
 

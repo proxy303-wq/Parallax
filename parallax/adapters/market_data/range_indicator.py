@@ -191,9 +191,24 @@ def prob_profit(symbol: str, short_pts: float, credit_pts: float,
                 straddle: float, dte: int) -> float | None:
     """P(the condor finishes in profit) -- uses the BREAK-EVEN, short + credit.
 
-    A condor is paid out to its break-even, not its strike.  Using short_pts
-    alone under-predicts the win rate by the credit: SENSEX 5/-3 reads 0.65 that
-    way against 0.74 measured.
+    THIS NUMBER DID NOT SURVIVE WALK-FORWARD.  Do not size a position on it.
+
+    Fitted on data before 2026-05-01 and tested on the four months after, it
+    missed in BOTH directions:
+
+        NIFTY   4/-3   predicted 97.6%   realised  88.9%   (-8.7)
+        SENSEX  5/-3   predicted 88.6%   realised 100.0%   (+11.4)
+
+    Opposite signs is the signature of noise, not a fixable bias.  The tail this
+    depends on is not stable between periods -- one NIFTY test-window expiry
+    moved 2.48x the straddle against a training tail that topped out at 1.94x --
+    and 65 to 85 expiries simply cannot estimate a 5% tail.
+
+    What IS validated is the BANDS: walk-forward, 47% of sessions landed inside
+    p25-p75 and 80% inside p10-p90, exactly as designed.  Use the bands.
+
+    Kept because it is the right shape and correct on the training data; it is
+    here as a reference, not as a forecast.
     """
     return prob_move_within(symbol, float(short_pts) + float(credit_pts), straddle, dte)
 
