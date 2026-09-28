@@ -204,6 +204,7 @@ def run_session(index: str = "NIFTY", lots: int = LOTS, short_off: int = 3,
                 instrument: str | None = None, poll: int = POLL,
                 enter_at: str | None = None, enter_now: bool = False,
                 deadline: datetime | None = None, plan_fn=None, now_fn=None,
+                force_entry: bool = False, allow_stack: bool = False,
                 sleep=time.sleep) -> str:
     """Hold one index's positional condor for one session.
 
@@ -271,7 +272,11 @@ def run_session(index: str = "NIFTY", lots: int = LOTS, short_off: int = 3,
                      % (index, deadline.strftime("%H:%M")))
                 return "deadline"
             plan = plan_fn(now)
-            due = index in plan
+            # force_entry runs an index the schedule did NOT pick.  The plan
+            # returns exactly one index per day, and on a last Tuesday that is
+            # BANKNIFTY - so a NIFTY worker told to trade anyway would otherwise
+            # wait all session for a turn that never comes.
+            due = force_entry or index in plan
             in_window = True
             if due and hh is not None:
                 target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
@@ -298,7 +303,11 @@ def run_session(index: str = "NIFTY", lots: int = LOTS, short_off: int = 3,
         foreign = [p for p in (positions_fn() if positions_fn else [])
                    if str(p.get("strategy") or "").startswith("options")
                    and str(p.get("instrument") or "") != instrument]
-        if foreign:
+        # allow_stack exempts this run from that guard, for a deliberate
+        # two-index session.  It is a real risk control, not a formality: two
+        # stacked condors are two full margin requirements, and on this book one
+        # BANKNIFTY condor is already ~79% of the paper capital.
+        if foreign and not allow_stack:
             _say("[HOLD] not entering - another options position is open: "
                  + ", ".join("%s/%s" % (p.get("instrument"), p.get("strategy"))
                              for p in foreign))
@@ -424,7 +433,9 @@ def main() -> None:
         instrument=arg("--instrument", "%s 0DTE" % index),
         poll=int(arg("--poll", POLL)),
         enter_at=arg("--enter-at", None),
-        enter_now="--enter" in sys.argv)
+        enter_now="--enter" in sys.argv,
+        force_entry="--force-entry" in sys.argv,
+        allow_stack="--allow-stack" in sys.argv)
 
 
 if __name__ == "__main__":
