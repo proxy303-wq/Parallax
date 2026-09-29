@@ -227,23 +227,63 @@ def generate_access_token(client_id: str, pin: str, totp_code: str,
 # token health + proactive refresh
 # ------------------------------------------------------------
 
+def issued_at(token: str) -> float:
+    """The JWT iat, or 0.0 when it cannot be read."""
+    import base64 as _b64
+    import json as _json
+    try:
+        p = token.split(".")[1]
+        p += "=" * (-len(p) % 4)
+        return float(_json.loads(_b64.urlsafe_b64decode(p)).get("iat") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def token_works(token: str, client_id: str = "", timeout: int = 15,
+                retries: int = 1) -> bool:
+    """Ask Dhan whether this token actually authenticates.
+
+    An unexpired JWT is NOT evidence of a live token.  Every TOTP generation
+    REVOKES the previous one, and a revoked token still parses, still carries a
+    future exp, and still passes token_is_expired() - but every API call answers
+    401 with code 808.  Only the API can tell the difference.  /fundlimit is the
+    cheapest call that proves it.
+    """
+    cid = client_id or os.environ.get("DHAN_CLIENT_ID", "")
+    for attempt in range(retries + 1):
+        try:
+            _http_json("https://api.dhan.co/v2/fundlimit", method="GET",
+                       headers={"access-token": token, "client-id": cid},
+                       timeout=timeout)
+            return True
+        except Exception:
+            if attempt == retries:
+                return False
+    return False
+
+
 def active_token() -> tuple[str, str]:
     """The token resolve_token() would actually use, and where it lives.
 
-    DHAN_ACCESS_TOKEN in the environment and the saved token file disagree the
-    moment any refresh has happened: the env var is a stale leftover and the
-    file holds the live one.  Picking env blindly made token_status() report an
-    expired token while the system was working fine, and made _ensure_token()
-    fire a refresh on every call - and a TOTP refresh INVALIDATES the working
-    token, so that path can only ever break a live session.
+    NEWEST WINS.  DHAN_ACCESS_TOKEN and the saved file disagree the moment any
+    refresh has happened, and the older one is not merely stale - it is REVOKED,
+    because minting a token invalidates its predecessor.  A revoked token is
+    still unexpired, so picking on "unexpired" alone hands back a dead token
+    that every call rejects with 808.
+
+    That is exactly what happened on 2026-09-29: the 08:00 refresh wrote a live
+    token to the file while .env still held the previous day's, the stale one
+    won on "unexpired", and both condors failed to enter at 09:30.  They only got
+    in at 09:42, after a manual re-mint.
     """
     from parallax.adapters.env import env as _env
     etok = _env("DHAN_ACCESS_TOKEN") or ""
-    if etok and not token_is_expired(etok, margin_s=0):
-        return etok, "env"
     ftok = load_saved_token() or ""
-    if ftok and not token_is_expired(ftok, margin_s=0):
-        return ftok, "saved file"
+    live = [(t, n) for t, n in ((etok, "env"), (ftok, "saved file"))
+            if t and not token_is_expired(t, margin_s=0)]
+    if live:
+        live.sort(key=lambda pair: issued_at(pair[0]), reverse=True)
+        return live[0]
     for name, tok in (("env (expired)", etok), ("saved file (expired)", ftok)):
         if tok:
             return tok, name
@@ -322,9 +362,15 @@ def daily_refresh(client_id: str, pin: str = "", totp_secret: str = "",
     """
     tok, src = active_token()
     left_h = (token_expiry(tok) - time.time()) / 3600.0 if tok else -1.0
-    if tok and left_h > MIN_LIFE_H:
+    # "Unexpired" is not "usable".  Prove it against the API before handing it
+    # back, because a revoked token passes every local check and then 401s all
+    # morning.  This is the 08:00 gate that should have caught 2026-09-29.
+    if tok and left_h > MIN_LIFE_H and token_works(tok, client_id):
         return tok, "still valid (%.1fh, %s)" % (left_h, src)
-    if tok and left_h > 0:
+    if tok and left_h > MIN_LIFE_H:
+        notify("token LOOKS valid (%.1fh via %s) but Dhan REJECTS it - "
+               "re-minting rather than starting the session dead" % (left_h, src))
+    elif tok and left_h > 0:
         renewed = renew_token(client_id, tok)
         if renewed and not token_is_expired(renewed, margin_s=0):
             save_token(renewed)

@@ -49,6 +49,10 @@ STATE = os.path.join(REPO, "options_hold.json")
 #: Hedging collapses SPAN 13.8x (Rs 12,54,383 -> Rs 90,779 at 10 lots) and moves
 #: exposure not at all (Rs 6,00,823 either way).
 LOTS = 7
+#: Warn when we enter this many minutes after the configured slot.  The ATM is
+#: struck from the CURRENT price, so a late entry strikes it after the opening
+#: move has already run.
+LATE_ENTRY_MIN = 5.0
 POLL = 15
 # There was an INSTRUMENT = "NIFTY 0DTE HOLD" constant here, claiming a name
 # that never collides with the runner.  It was dead: main() defaults to
@@ -312,6 +316,21 @@ def run_session(index: str = "NIFTY", lots: int = LOTS, short_off: int = 3,
                  + ", ".join("%s/%s" % (p.get("instrument"), p.get("strategy"))
                              for p in foreign))
             return "position-held"
+
+        # THE STRIKES ARE CHOSEN FROM RIGHT NOW, NOT FROM THE SLOT.  A late
+        # entry therefore builds the condor around a price the morning has
+        # already moved away from.  On 2026-09-29 a token failure pushed both
+        # entries 12 minutes late: BANKNIFTY's ATM came out 100 points below what
+        # a 09:30 entry would have given, which was the whole difference between
+        # going 97 points through the call side intraday and missing it by 3.
+        # The P&L was identical, so nothing surfaced it - hence this line.
+        if hh is not None:
+            slot = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            late_min = (now - slot).total_seconds() / 60.0
+            if late_min >= LATE_ENTRY_MIN:
+                _say("[%s] entering %.0f min after the %s slot - the ATM is struck "
+                     "from the CURRENT price, so it has drifted with the morning "
+                     "move" % (index, late_min, enter_at))
 
         # Re-read the MODE here, for the same reason the token is re-resolved
         # here.  These workers are long-lived - Restart=always, and each idles
