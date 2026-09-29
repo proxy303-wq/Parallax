@@ -38,6 +38,25 @@ th{color:#8b949e;font-weight:500}.tag{padding:2px 8px;border-radius:10px;font-si
 """
 
 
+def _ist_stamp(value, with_date=True):
+    """The journal stores UTC; the desk reads IST.
+
+    Rendering the raw ISO string put a 09:42 IST entry on the dashboard as
+    "04:11", which on a trading screen reads as a pre-open fill.  Everything the
+    operator sees should be in the timezone the market actually runs on.
+    """
+    import datetime as _d
+    ist = _d.timezone(_d.timedelta(hours=5, minutes=30))
+    try:
+        dt = _d.datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return str(value or "")[:16].replace("T", " ")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_d.timezone.utc)
+    return dt.astimezone(ist).strftime(
+        "%Y-%m-%d %H:%M" if with_date else "%H:%M:%S")
+
+
 def _fmt(x, dec=0):
     return f"{x:,.{dec}f}" if isinstance(x, (int, float)) else str(x)
 
@@ -100,7 +119,7 @@ def _trade_rows(trades):
         pcls = "pos" if t["pnl"] > 0 else "neg"
         rows.append(
             "<tr>"
-            f"<td>{t['ts'][:16].replace('T', ' ')}</td>"
+            f"<td>{_ist_stamp(t['ts'])}</td>"
             f"<td><span class='tag {cls}'>{t['strategy']}</span></td>"
             f"<td>{t['instrument']}</td><td>{t['side']}</td><td>{t['qty']:.0f}</td>"
             f"<td>{t['entry']:.0f} to {t['exit']:.0f}</td>"
@@ -163,7 +182,7 @@ def _positions_card():
                 f"<td>{_fmt(p.get('entry'), 2)}</td>"
                 f"<td>{_fmt(p.get('stop'), 2)}</td>"
                 f"<td class='{cls}'>{ptxt}</td>"
-                f"<td>{str(p.get('updated') or '')[11:19]}</td></tr>")
+                f"<td>{_ist_stamp(p.get('updated'), with_date=False)}</td></tr>")
     return _card("Open Positions", head + out)
 
 
