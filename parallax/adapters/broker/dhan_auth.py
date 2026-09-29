@@ -312,17 +312,22 @@ def token_status(token: str | None = None) -> dict:
 
 
 def refresh_token(client_id: str, pin: str = "", totp_secret: str = "",
-                  min_hours: float = 12.0, notify=print) -> tuple:
+                  min_hours: float = 12.0, force: bool = False,
+                  notify=print) -> tuple:
     """Proactively refresh the token before it lapses.
 
     Order: RenewToken (keeps the SELF type, which market data needs) then TOTP
     (fresh APP token - trading APIs work, market data may not).  Every TOTP
     generation invalidates the previous token, so only call this when needed.
     Returns (token, source)."""
+    # force=True means the API has already REJECTED this token.  Every local
+    # test calls it healthy - it is unexpired and the client id matches - so the
+    # shortcut below would hand the same dead token straight back, and so would
+    # RenewToken.  Go to generation.
     tok, _src = active_token()
-    if tok and not token_is_expired(tok, margin_s=int(min_hours * 3600)):
+    if not force and tok and not token_is_expired(tok, margin_s=int(min_hours * 3600)):
         return tok, "still valid (" + _src + ")"
-    if tok:
+    if tok and not force:
         renewed = renew_token(client_id, tok)
         if renewed and not token_is_expired(renewed, margin_s=0):
             save_token(renewed)
@@ -367,7 +372,8 @@ def daily_refresh(client_id: str, pin: str = "", totp_secret: str = "",
     # morning.  This is the 08:00 gate that should have caught 2026-09-29.
     if tok and left_h > MIN_LIFE_H and token_works(tok, client_id):
         return tok, "still valid (%.1fh, %s)" % (left_h, src)
-    if tok and left_h > MIN_LIFE_H:
+    rejected = bool(tok) and left_h > MIN_LIFE_H
+    if rejected:
         notify("token LOOKS valid (%.1fh via %s) but Dhan REJECTS it - "
                "re-minting rather than starting the session dead" % (left_h, src))
     elif tok and left_h > 0:
@@ -382,7 +388,7 @@ def daily_refresh(client_id: str, pin: str = "", totp_secret: str = "",
     # the renewal never runs and the session dies mid-morning.  Ask for the same
     # margin this function demands, so a token below it is actually replaced.
     return refresh_token(client_id, pin, totp_secret,
-                         min_hours=MIN_LIFE_H, notify=notify)
+                         min_hours=MIN_LIFE_H, force=rejected, notify=notify)
 
 
 def load_saved_token(path: str = DEFAULT_TOKEN_FILE) -> str | None:

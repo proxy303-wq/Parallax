@@ -53,8 +53,24 @@ def test_daily_refresh_replaces_an_app_token_that_is_about_to_lapse(probe):
 
 
 def test_daily_refresh_leaves_a_healthy_token_alone(probe, monkeypatch):
-    """Regenerating here would invalidate a working session."""
+    """Regenerating here would invalidate a working session.
+
+    'Healthy' now means the API said so, not merely that the JWT has hours left,
+    so token_works() is stubbed rather than left to make a real call.
+    """
     monkeypatch.setattr(A, "active_token", lambda: (_jwt(20 * 3600), "saved file"))
+    monkeypatch.setattr(A, "token_works", lambda *a, **k: True)
     tok, src = A.daily_refresh("cid", "pin", "secret")
     assert "still valid" in src
     assert probe == []
+
+
+def test_daily_refresh_remints_a_token_the_api_rejects(probe, monkeypatch):
+    """2026-09-29, exactly.  22 hours of life, correct client id, and every call
+    answered 401/808 because a newer mint had revoked it.  The session started
+    on that token and both condors missed the 09:30 entry."""
+    monkeypatch.setattr(A, "active_token", lambda: (_jwt(22 * 3600), "env"))
+    monkeypatch.setattr(A, "token_works", lambda *a, **k: False)
+    tok, src = A.daily_refresh("cid", "pin", "secret", notify=lambda m: None)
+    assert tok == NEW_TOKEN, "a token the API rejects must not be handed back"
+    assert len(probe) == 1
