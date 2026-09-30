@@ -74,8 +74,26 @@ def test_no_token_at_all(monkeypatch):
 
 
 def test_token_works_is_false_when_dhan_rejects(monkeypatch):
+    """_http_json RETURNS the error rather than raising, so the check has to
+    read the body.  Testing only for an exception reported a dead token as
+    healthy - the exact bug this function exists to prevent."""
+    monkeypatch.setattr(A, "_http_json", lambda *a, **k: {
+        "status": "error", "http": 400,
+        "text": '{"errorType":"Order_Error","errorCode":"DH-906",'
+                '"errorMessage":"Invalid Token"}'})
+    assert A.token_works("x", retries=0) is False
+
+
+def test_token_works_is_false_on_a_401_eight_oh_eight(monkeypatch):
+    monkeypatch.setattr(A, "_http_json", lambda *a, **k: {
+        "status": "error", "http": 401,
+        "text": '{"data":{"808":"Authentication Failed - Client ID or Token invalid"}}'})
+    assert A.token_works("x", retries=0) is False
+
+
+def test_token_works_still_false_if_it_raises(monkeypatch):
     def boom(*a, **k):
-        raise RuntimeError("401 808 Authentication Failed")
+        raise RuntimeError("network down")
     monkeypatch.setattr(A, "_http_json", boom)
     assert A.token_works("x", retries=0) is False
 

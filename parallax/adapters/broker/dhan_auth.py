@@ -251,14 +251,22 @@ def token_works(token: str, client_id: str = "", timeout: int = 15,
     """
     cid = client_id or os.environ.get("DHAN_CLIENT_ID", "")
     for attempt in range(retries + 1):
+        # _http_json does NOT raise on an HTTP error - it RETURNS
+        # {"status": "error", "http": 401, ...}.  Wrapping it in try/except and
+        # returning True on "no exception" therefore reported a DEAD token as
+        # healthy, which is precisely the failure this function exists to catch.
+        # It did exactly that on 2026-09-30: fundlimit answered
+        # 400 DH-906 "Invalid Token" and token_works() still said True.
         try:
-            _http_json("https://api.dhan.co/v2/fundlimit", method="GET",
-                       headers={"access-token": token, "client-id": cid},
-                       timeout=timeout)
-            return True
+            res = _http_json("https://api.dhan.co/v2/fundlimit", method="GET",
+                             headers={"access-token": token, "client-id": cid},
+                             timeout=timeout)
         except Exception:
-            if attempt == retries:
-                return False
+            res = None       # a network blip must mean "not proven", not a crash
+        if isinstance(res, dict) and res.get("status") != "error":
+            return True
+        if attempt == retries:
+            return False
     return False
 
 
