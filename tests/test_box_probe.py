@@ -94,6 +94,31 @@ def test_expected_move_is_the_straddle_over_0_798():
     assert abs(sig - 325.86) < 0.01
 
 
+def test_an_atm_straddle_really_costs_0_7979_sigma():
+    """Why the probe divides by 0.7979 and not 0.85.
+
+    A straddle IS 0.7979 sigma (2*phi(0)*sigma*sqrt(T)), so the popular
+    "0.85 x straddle" shortcut lands on 0.68 sigma - near the MEDIAN move
+    (0.674 sigma), not one standard deviation.  Two different quantities
+    share the name "expected move", and on NIFTY 6 Oct they differ by 1.47x
+    (326.5 vs 221.4 points), which moves the doc's strikes two steps.
+    """
+    import math
+
+    def norm(x):
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+    spot = 22421.95
+    for sigma_sqrt_t in (0.005, 0.014561, 0.03):
+        v = sigma_sqrt_t
+        call = spot * norm(v / 2.0) - spot * norm(-v / 2.0)
+        straddle = 2.0 * call
+        assert abs(straddle - 0.79788 * spot * v) / straddle < 0.01
+    # and the shortcut really is the smaller number
+    assert 0.85 < 1.0 / 0.79788
+    assert abs(0.85 * 0.79788 - 0.678) < 0.001   # ~ the median move
+
+
 def test_expected_move_is_zero_without_a_straddle():
     assert expected_move(_rows({}), 22400.0) == 0.0
 
