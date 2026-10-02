@@ -74,3 +74,32 @@ def test_daily_refresh_remints_a_token_the_api_rejects(probe, monkeypatch):
     tok, src = A.daily_refresh("cid", "pin", "secret", notify=lambda m: None)
     assert tok == NEW_TOKEN, "a token the API rejects must not be handed back"
     assert len(probe) == 1
+
+
+def test_a_revoked_token_is_reminted_even_inside_the_generation_guard(probe, monkeypatch):
+    """2026-10-02.  Four workers each ran the 08:00 refresh; every mint REVOKES
+    the previous token, so the one left on disk was dead while still parsing
+    with ~23h of life.
+
+    hours_since_generation() was minutes, so the once-a-day guard held,
+    generation was declined, and the account stayed dead for the whole
+    session with no way back - the guard was protecting a token Dhan had
+    already thrown away.  force is what makes rejection, not local expiry,
+    the deciding vote.
+    """
+    monkeypatch.setattr(A, "hours_since_generation", lambda: 0.6)
+    monkeypatch.setattr(A, "active_token", lambda: (_jwt(22.9 * 3600), "saved file"))
+    monkeypatch.setattr(A, "token_works", lambda *a, **k: False)
+    tok, src = A.daily_refresh("cid", "pin", "secret", notify=lambda m: None)
+    assert tok == NEW_TOKEN, "the guard must not protect a token Dhan rejects"
+    assert len(probe) == 1
+
+
+def test_the_guard_still_holds_for_a_token_that_works(probe, monkeypatch):
+    """The guard exists so a second worker cannot revoke a live session."""
+    monkeypatch.setattr(A, "hours_since_generation", lambda: 0.6)
+    monkeypatch.setattr(A, "active_token", lambda: (_jwt(22.9 * 3600), "saved file"))
+    monkeypatch.setattr(A, "token_works", lambda *a, **k: True)
+    tok, src = A.daily_refresh("cid", "pin", "secret", notify=lambda m: None)
+    assert "still valid" in src
+    assert probe == []

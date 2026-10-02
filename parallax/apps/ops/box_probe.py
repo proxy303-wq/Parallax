@@ -44,6 +44,8 @@ import json
 import time
 from datetime import datetime, timedelta, timezone
 
+from parallax.adapters.broker.dhan_auth import daily_refresh
+from parallax.adapters.env import env
 from parallax.adapters.market_data.dhan_options import fetch_option_chain
 from parallax.adapters.telegram import TelegramBot
 
@@ -68,6 +70,32 @@ DOC_OFFSETS = {"call_short": -17, "call_long": -8, "put_long": -17, "put_short":
 #: The screen position, as absolute strikes.
 FIXED_STRIKES = {"call_short": 21550.0, "call_long": 22000.0,
                  "put_long": 21550.0, "put_short": 21800.0}
+
+
+#: The token this run is using, once refresh_auth has proved it works.
+_TOKEN = None
+
+
+def refresh_auth(say=None):
+    """Mint or adopt a token Dhan actually accepts.
+
+    Plain resolve_token is not enough.  A token is revoked the moment a newer
+    one is minted, but it still parses with a future exp, so every local check
+    passes and /optionchain then returns None for the whole session - a silent
+    no-trade, which is how 2026-10-01 was lost.  daily_refresh probes
+    /fundlimit and re-mints on rejection, the only test that catches it.
+    """
+    global _TOKEN
+    try:
+        tok, src = daily_refresh(env("DHAN_CLIENT_ID"), env("DHAN_PIN"),
+                                 env("DHAN_TOTP_SECRET"), notify=print)
+        _TOKEN = tok
+        if say:
+            say("PROBE token: " + str(src))
+    except Exception as exc:
+        if say:
+            say("PROBE token refresh failed: %s" % exc)
+    return _TOKEN
 
 
 def legs(strikes: dict) -> list:
@@ -102,6 +130,30 @@ def payoff_bounds(book: list, credit: float, lo: float = 15000.0, hi: float = 30
             best = (v, s)
         s += STEP / 2.0
     return {"floor": worst[0], "floor_at": worst[1], "ceiling": best[0], "ceiling_at": best[1]}
+
+
+#: An ATM straddle costs 0.7979 sigma (2*phi(0)*sigma*sqrt(T)), so inverting it
+#: gives one standard deviation of expected move without needing an IV.
+ATM_STRADDLE_RATIO = 0.79788
+
+#: The screen's legs, re-expressed as multiples of one sigma.  Derived from the
+#: screen itself: spot 22421.95, straddle 260.52, so 1 sigma = 326.5 points and
+#: 21550/21800/22000 sit at -2.67 / -1.90 / -1.29 sigma.
+DOC_SIGMA = {"call_short": -2.67, "call_long": -1.29,
+             "put_long": -2.67, "put_short": -1.90}
+
+
+def snap(strike: float, step: float = STEP) -> float:
+    return round(strike / step) * step
+
+
+def expected_move(rows: dict, atm: float) -> float:
+    """One standard deviation of expected move, from the ATM straddle."""
+    ce, pe = quote(rows, atm, "CE"), quote(rows, atm, "PE")
+    if not ce or not pe:
+        return 0.0
+    straddle = ((ce["bid"] + ce["ask"]) / 2.0) + ((pe["bid"] + pe["ask"]) / 2.0)
+    return straddle / ATM_STRADDLE_RATIO
 
 
 def quote(rows: dict, strike: float, otype: str) -> dict | None:
@@ -148,8 +200,12 @@ def describe(rows: dict, strikes: dict, label: str) -> dict:
 
 
 def format_entry(rec: dict) -> str:
+    extra = ""
+    if rec.get("sigma"):
+        extra = "   straddle %.2f  1 sigma %.1f pts (%.2f%%)" % (
+            rec.get("straddle", 0.0), rec["sigma"], 100.0 * rec["sigma"] / rec["spot"])
     lines = ["", "PAPER PROBE  " + rec["variant"].upper() + "   " + SYMBOL + " " + EXPIRY,
-             "  entry spot %.2f   ATM %.0f   %d lots" % (rec["spot"], rec["atm"], LOTS)]
+             "  entry spot %.2f   ATM %.0f   %d lots%s" % (rec["spot"], rec["atm"], LOTS, extra)]
     for leg in rec["legs"]:
         lines.append("   %-4s %-2s %7.0f  screen %8.2f   bid %8.2f  ask %8.2f   vol %d"
                      % (leg["action"], leg["type"], leg["strike"], leg["ltp"],
@@ -184,15 +240,18 @@ def write_state(state: dict) -> None:
         pass
 
 
-def fetch_rows(expiry: str = EXPIRY, tries: int = 20):
+def fetch_rows(expiry: str = EXPIRY, tries: int = 20, say=None):
     for i in range(tries):
-        chain = fetch_option_chain(SYMBOL, expiry=expiry)
+        chain = fetch_option_chain(SYMBOL, expiry=expiry, token=_TOKEN)
         if chain and chain.get("rows"):
             rows = {}
             for r in chain["rows"]:
-                if int(r.get("volume") or 0) >= 0:
-                    rows[(float(r["strike"]), r["option_type"])] = r
+                rows[(float(r["strike"]), r["option_type"])] = r
             return chain["spot"], rows
+        # An empty chain is the symptom of a revoked token far more often than
+        # of a rate limit, and re-minting is the only thing that clears it.
+        if i % 3 == 0:
+            refresh_auth(say)
         time.sleep(20)
     return None, None
 
@@ -202,14 +261,23 @@ def do_entry(say) -> dict:
     if state.get("entries"):
         say("PROBE: already entered at %s - not entering twice" % state.get("entered_at", "?"))
         return state
-    spot, rows = fetch_rows()
+    refresh_auth(say)
+    spot, rows = fetch_rows(say=say)
     if not spot:
         say("PROBE: option chain unavailable, no entry")
         return {}
     atm = round(spot / STEP) * STEP
     restruck = {k: atm + off * STEP for k, off in DOC_OFFSETS.items()}
+    # Where the screen's legs actually sat, in units of the market's own expected
+    # move.  The screen was 1.3 to 2.7 sigma BELOW spot - not the money at all -
+    # and that is invisible when the strikes are copied as round numbers.
+    sig = expected_move(rows, atm)
+    sigma_strikes = {k: snap(atm + sig_mult * sig) for k, sig_mult in DOC_SIGMA.items()}
+    state["straddle"] = sig * ATM_STRADDLE_RATIO
+    state["sigma"] = sig
     state["entries"] = []
-    for label, strikes in (("fixed", FIXED_STRIKES), ("restruck", restruck)):
+    for label, strikes in (("fixed", FIXED_STRIKES), ("restruck", restruck),
+                           ("sigma", sigma_strikes)):
         try:
             rec = describe(rows, strikes, label)
         except KeyError as exc:
@@ -220,6 +288,8 @@ def do_entry(say) -> dict:
         rec["atm"] = atm
         rec["lots"] = LOTS
         rec["expiry"] = EXPIRY
+        rec["sigma"] = sig
+        rec["straddle"] = sig * ATM_STRADDLE_RATIO
         rec["entered"] = now_ist().strftime("%Y-%m-%d %H:%M:%S")
         state["entries"].append(rec)
         say(format_entry(rec))
@@ -235,7 +305,8 @@ def do_settle(say) -> dict:
     if not entries:
         say("PROBE: nothing to settle")
         return state
-    spot, rows = fetch_rows()
+    refresh_auth(say)
+    spot, rows = fetch_rows(say=say)
     if not spot:
         say("PROBE: no settlement price available")
         return state

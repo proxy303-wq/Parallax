@@ -1,8 +1,9 @@
 """The 4-leg screen structure: the arithmetic the probe rests on."""
 from __future__ import annotations
 
-from parallax.apps.ops.box_probe import (DOC_OFFSETS, FIXED_STRIKES, credit_on,
-                                         intrinsic, legs, payoff_bounds)
+from parallax.apps.ops.box_probe import (ATM_STRADDLE_RATIO, DOC_OFFSETS, DOC_SIGMA,
+                                         FIXED_STRIKES, credit_on, expected_move,
+                                         intrinsic, legs, payoff_bounds, snap)
 
 SCREEN = {"c21550": 1181.35, "p21550": 4.30, "p21800": 8.00, "c22000": 472.50}
 
@@ -84,6 +85,26 @@ def test_executable_floor_is_negative_on_real_quotes():
         b = payoff_bounds(book, credit_on(LIVE, book, basis))
         assert abs(b["floor"] - want) < 1e-9, basis
     assert payoff_bounds(book, credit_on(LIVE, book, "executable"))["floor"] < 0
+
+
+def test_expected_move_is_the_straddle_over_0_798():
+    rows = _rows({(22400, "CE"): (200.0, 199.0, 201.0), (22400, "PE"): (60.0, 59.0, 61.0)})
+    sig = expected_move(rows, 22400.0)
+    assert abs(sig - 260.0 / ATM_STRADDLE_RATIO) < 1e-9
+    assert abs(sig - 325.86) < 0.01
+
+
+def test_expected_move_is_zero_without_a_straddle():
+    assert expected_move(_rows({}), 22400.0) == 0.0
+
+
+def test_sigmas_reproduce_the_screen_strikes():
+    """The screen was 1.3 to 2.7 sigma BELOW spot - not the money at all."""
+    sig = 260.52 / ATM_STRADDLE_RATIO
+    got = {k: snap(22400.0 + m * sig) for k, m in DOC_SIGMA.items()}
+    assert got == FIXED_STRIKES, got
+    assert all(m < 0 for m in DOC_SIGMA.values())
+    assert DOC_SIGMA["call_short"] < -2.5 and DOC_SIGMA["call_long"] > -1.5
 
 
 def test_the_arbitrage_needs_a_credit_above_450():

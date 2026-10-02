@@ -180,7 +180,8 @@ def _mark_generation() -> None:
 
 
 def generate_access_token(client_id: str, pin: str, totp_code: str,
-                          min_interval_hours: float = 23.0) -> str | None:
+                          min_interval_hours: float = 23.0,
+                          force: bool = False) -> str | None:
     """Generate a fresh TOTP access token.
 
     GUARDED to at most one generation per 'min_interval_hours' (default 23h -
@@ -195,7 +196,14 @@ def generate_access_token(client_id: str, pin: str, totp_code: str,
         # reads is shared AND the read-then-write is atomic; without the lock
         # two workers both read "never generated" and both fire.
         age = hours_since_generation()
-        if age < min_interval_hours:
+        # force=True means Dhan has already REJECTED the live token.  The guard
+        # below is the reason a dead session could not be revived: a revoked
+        # token still parses with a future exp, so left_h reads ~23h, "the live
+        # token is still worth keeping" is judged true, and generation is
+        # declined until the guard ages out - a whole trading day later.  On
+        # 2026-10-02 the 08:00 refresh ran in four workers, each mint revoking
+        # the last, and the account then sat dead with no way back.
+        if age < min_interval_hours and not force:
             # ...but decline only while the live token is still worth keeping.
             # RenewToken is SELF-only, so an APP token cannot be extended and has
             # to be RE-MINTED before it lapses.  The daily 08:00 refresh lands
@@ -345,7 +353,7 @@ def refresh_token(client_id: str, pin: str = "", totp_secret: str = "",
         if os.environ.get("PARALLAX_AUTO_GENERATE_TOKEN", "true").lower() == "false":
             return None, "auto-generation disabled"
         age = hours_since_generation()
-        new = generate_access_token(client_id, pin, totp(totp_secret))
+        new = generate_access_token(client_id, pin, totp(totp_secret), force=force)
         if new and not token_is_expired(new, margin_s=0):
             save_token(new)
             notify("token regenerated via TOTP")
