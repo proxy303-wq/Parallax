@@ -6,9 +6,13 @@ workers.  Run with:  uvicorn parallax.web.app:app
 """
 from __future__ import annotations
 
+import time
+
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from parallax.adapters.market_data.commodity_chain import fetch_chain
+from parallax.config.commodities import COMMODITIES, spec
 from parallax.web.store import JournalStore
 
 app = FastAPI(title="PARALLAX", docs_url=None, redoc_url=None)
@@ -77,7 +81,7 @@ def _page(title, active, body):
         f'<a href="{h}" class="{"active" if a == active else ""}">{t}</a>'
         for t, h, a in (("Home", "/", "home"),
                         ("Index Options", "/options", "options"),
-                        ("Stock Options", "/stock-options", "stock-options")))
+                        ("Commodity Options", "/commodity-options", "commodity-options")))
     mode = store.mode()
     nxt = store.next_mode()
     going_live = nxt == "live"
@@ -249,33 +253,62 @@ def options():
         "deploy/README.md."))
 
 
-# --------------------------------------------------------------- stock options
-# Single-stock (equity) options.  Nothing writes to this book yet, so the page is
-# built to render whatever appears -- it starts working the moment a worker
-# journals a strategy whose name contains "stock", with no further change here.
-STOCK_KEY = "stock"
+# ------------------------------------------------------- commodity options
+# MCX futures options: Crude Oil, Gold Mini, Silver Mini, Natural Gas.
+# No index-style chain endpoint exists, so each card is assembled live from the
+# scrip master + /marketfeed/ltp via commodity_chain.fetch_chain.  Nothing
+# trades to this book yet; the page shows the live surface a condor would be
+# struck from.
+_CHAIN_CACHE: dict[str, tuple[float, dict]] = {}
 
 
-@app.get("/stock-options", response_class=HTMLResponse)
-def stock_options():
-    trades = [t for t in store.trades(limit=300)
-              if STOCK_KEY in str(t["strategy"]).lower()]
-    live = [p for p in _option_positions() if STOCK_KEY in str(p.get("strategy")).lower()]
-    wins = sum(1 for t in trades if t["pnl"] > 0)
-    pnl = sum(t["pnl"] for t in trades)
-    cls = "pos" if pnl >= 0 else "neg"
-    body = _card(
-        "Stock Options",
-        "<div class='grid'>"
-        + _stat("P&L", "Rs{:+,.0f}".format(pnl), cls)
-        + _stat("Win rate", "{:.0%}".format(wins / len(trades) if trades else 0.0))
-        + _stat("Trades", str(len(trades)))
-        + "</div>",
-        "Single-stock options. No book is wired up yet -- this page is ready for one.")
-    body += _positions_card() if live else _card(
-        "Open Positions", "<p style='color:#8b949e;margin:0'>flat</p>")
-    body += _card("Journal", _trade_rows(trades))
-    return _page("Stock Options", "stock-options", body)
+def _cached_chain(symbol: str, ttl: float = 30.0) -> dict:
+    now = time.time()
+    hit = _CHAIN_CACHE.get(symbol)
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    try:
+        ch = fetch_chain(symbol)
+    except Exception as exc:
+        ch = {"error": str(exc)}
+    _CHAIN_CACHE[symbol] = (now, ch)
+    return ch
+
+
+def _commodity_card(symbol: str) -> str:
+    label = spec(symbol).label
+    ch = _cached_chain(symbol)
+    if not ch:
+        return _card(label + " (" + symbol + ")",
+                     "<p style='color:#8b949e;margin:0'>chain unavailable</p>")
+    if "error" in ch:
+        return _card(label + " (" + symbol + ")",
+                     "<p style='color:#f85149;margin:0'>" + ch["error"] + "</p>")
+    grid = ("<div class='grid'>"
+            + _stat("Futures", _fmt(ch["futures"], 2))
+            + _stat("ATM", _fmt(ch["atm"]))
+            + _stat("Expiry", ch["expiry"])
+            + "</div>")
+    by_strike: dict[float, dict] = {}
+    for r in ch["rows"]:
+        by_strike.setdefault(r["strike"], {})[r["option_type"]] = r["ltp"]
+    rows = ""
+    for s in sorted(by_strike):
+        ce = by_strike[s].get("CE", 0.0)
+        pe = by_strike[s].get("PE", 0.0)
+        hl = " style='background:#8957e522'" if s == ch["atm"] else ""
+        rows += (f"<tr{hl}><td>{_fmt(s)}</td><td>{_fmt(ce, 2)}</td>"
+                 f"<td>{_fmt(pe, 2)}</td></tr>")
+    table = ("<table><tr><th>Strike</th><th>Call</th><th>Put</th></tr>"
+             + rows + "</table>")
+    return _card(label + " (" + symbol + ")", grid + table,
+                 "MCX futures option · expires " + ch["expiry"])
+
+
+@app.get("/commodity-options", response_class=HTMLResponse)
+def commodity_options():
+    body = "".join(_commodity_card(s) for s in COMMODITIES)
+    return _page("Commodity Options", "commodity-options", body)
 
 
 
