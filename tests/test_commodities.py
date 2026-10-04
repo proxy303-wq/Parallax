@@ -17,9 +17,9 @@ def test_steps_are_sensible():
     assert COMMODITIES["GOLDM"].step >= COMMODITIES["CRUDEOIL"].step
 
 
-def test_lot_sizes_are_the_mcx_contract_specs():
+def test_lot_multipliers_are_the_pnl_units():
     assert COMMODITIES["CRUDEOIL"].lot == 100
-    assert COMMODITIES["GOLDM"].lot == 100
+    assert COMMODITIES["GOLDM"].lot == 10
     assert COMMODITIES["SILVERM"].lot == 5
     assert COMMODITIES["NATURALGAS"].lot == 1250
 

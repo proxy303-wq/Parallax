@@ -48,9 +48,14 @@ class Commodity:
 #: placeholder ("1.0"), so these come from the public MCX contract specs and
 #: should be VERIFIED against the margin calculator before any live order is
 #: sized off them.
+#: The lot value is the P&L MULTIPLIER - contract quantity divided by the quote
+#: unit - not the raw contract size.  MCX gold mini is 100g but quoted per 10g,
+#: so a 1-point move is Rs10, not Rs100.  GOLDM=10 is confirmed against a live
+#: strategy-builder screenshot (Rs33,590 net premium / 1,679.5 credit = 20 units
+#: for 2 lots); the others follow the same rule and want the same confirmation.
 COMMODITIES = {
     "CRUDEOIL": Commodity("CRUDEOIL", "CRUDEOIL", 50.0, 100, "Crude Oil"),
-    "GOLDM": Commodity("GOLDM", "GOLDM", 500.0, 100, "Gold Mini"),
+    "GOLDM": Commodity("GOLDM", "GOLDM", 500.0, 10, "Gold Mini"),
     "SILVERM": Commodity("SILVERM", "SILVERM", 1000.0, 5, "Silver Mini"),
     "NATURALGAS": Commodity("NATURALGAS", "NATURALGAS", 5.0, 1250, "Natural Gas"),
 }
