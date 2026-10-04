@@ -55,10 +55,30 @@ class Commodity:
 #: for 2 lots); the others follow the same rule and want the same confirmation.
 COMMODITIES = {
     "CRUDEOIL": Commodity("CRUDEOIL", "CRUDEOIL", 50.0, 100, "Crude Oil"),
+    "CRUDEOILM": Commodity("CRUDEOILM", "CRUDEOILM", 50.0, 10, "Crude Oil Mini"),
     "GOLDM": Commodity("GOLDM", "GOLDM", 500.0, 10, "Gold Mini"),
     "SILVERM": Commodity("SILVERM", "SILVERM", 1000.0, 5, "Silver Mini"),
     "NATURALGAS": Commodity("NATURALGAS", "NATURALGAS", 5.0, 1250, "Natural Gas"),
+    "NATGASMINI": Commodity("NATGASMINI", "NATGASMINI", 5.0, 250, "Natural Gas Mini"),
 }
+
+
+#: The commodity condor book.  Shape 9/2 (short_off 9 strikes, wing 2), Gold Mini
+#: 3 lots, and Crude Mini / Nat Gas Mini sized to carry roughly the same rupee
+#: risk as Gold (Gold 3 lots ~ Rs18.8k max loss -> Crude 35 lots ~ Rs18.6k,
+#: NatGas 8 lots ~ Rs17.9k).  A separate Rs10L paper balance, independent of the
+#: index book's own paper account.
+BOOK = {
+    "short_off": 9,
+    "wing": 2,
+    "lots": {"GOLDM": 3, "CRUDEOILM": 35, "NATGASMINI": 8},
+    "paper_balance": 1_000_000.0,
+}
+
+
+def book_lots(symbol: str) -> int:
+    """Lots the commodity book runs for a symbol (default 1 if not sized)."""
+    return int(BOOK["lots"].get(str(symbol).upper(), 1))
 
 
 def spec(symbol: str) -> Commodity:
