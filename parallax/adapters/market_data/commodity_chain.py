@@ -144,7 +144,7 @@ def fetch_ltp(ids, token: str, client_id: str, retries: int = 3) -> dict[int, fl
 
 
 def fetch_chain(symbol: str, expiry: str | None = None, token: str | None = None,
-                client_id: str | None = None, strikes_each_side: int = 15) -> dict | None:
+                client_id: str | None = None, window_pct: float = 8.0) -> dict | None:
     """Chain around the money for one commodity expiry.
 
     Returns {underlying, symbol, expiry, futures, futures_id, atm,
@@ -166,9 +166,13 @@ def fetch_chain(symbol: str, expiry: str | None = None, token: str | None = None
 
     strikes = sorted(grid)
     atm = min(strikes, key=lambda s: abs(s - fprice))
-    lower = [s for s in strikes if s <= atm][-strikes_each_side:]
-    upper = [s for s in strikes if s >= atm][:strikes_each_side]
-    near = sorted(set(lower + upper))
+    lo = fprice * (1.0 - window_pct / 100.0)
+    hi = fprice * (1.0 + window_pct / 100.0)
+    near = [s for s in strikes if lo <= s <= hi]
+    if len(near) > 120:
+        near = sorted(sorted(strikes, key=lambda s: abs(s - fprice))[:120])
+    if len(near) < 5:
+        near = sorted(sorted(strikes, key=lambda s: abs(s - fprice))[:5])
 
     ids = [fut_id]
     for s in near:

@@ -12,6 +12,7 @@ from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from parallax.adapters.market_data.commodity_chain import fetch_chain
+from parallax.apps.ops.commodity_collar import collar_from_chain
 from parallax.config.commodities import COMMODITIES, spec
 from parallax.web.store import JournalStore
 
@@ -301,7 +302,22 @@ def _commodity_card(symbol: str) -> str:
                  f"<td>{_fmt(pe, 2)}</td></tr>")
     table = ("<table><tr><th>Strike</th><th>Call</th><th>Put</th></tr>"
              + rows + "</table>")
-    return _card(label + " (" + symbol + ")", grid + table,
+    collar_html = ""
+    try:
+        cl = collar_from_chain(ch)
+        if cl:
+            ncls = "pos" if cl["net"] <= 0 else "neg"
+            collar_html = ("<p style='margin:14px 0 2px;color:#8b949e;font-size:12px'>"
+                           "Collar 5% - long future, long " + _fmt(cl["put_strike"])
+                           + " put, short " + _fmt(cl["call_strike"]) + " call</p>"
+                           "<div class='grid'>"
+                           + _stat("Net", "{:+.2f}".format(cl["net"]), ncls)
+                           + _stat("Floor", "{:+,.0f}".format(cl["floor"]))
+                           + _stat("Cap", "{:+,.0f}".format(cl["cap"]))
+                           + "</div>")
+    except Exception:
+        pass
+    return _card(label + " (" + symbol + ")", grid + collar_html + table,
                  "MCX futures option · expires " + ch["expiry"])
 
 
