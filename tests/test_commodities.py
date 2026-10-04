@@ -17,9 +17,11 @@ def test_steps_are_sensible():
     assert COMMODITIES["GOLDM"].step >= COMMODITIES["CRUDEOIL"].step
 
 
-def test_lot_is_unresolved_until_margin_api():
-    for c in COMMODITIES.values():
-        assert c.lot is None, "lot must come from the margin calculator"
+def test_lot_sizes_are_the_mcx_contract_specs():
+    assert COMMODITIES["CRUDEOIL"].lot == 100
+    assert COMMODITIES["GOLDM"].lot == 100
+    assert COMMODITIES["SILVERM"].lot == 5
+    assert COMMODITIES["NATURALGAS"].lot == 1250
 
 
 def test_spec_lookup_is_case_insensitive():

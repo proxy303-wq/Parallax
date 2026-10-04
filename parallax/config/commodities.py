@@ -43,11 +43,16 @@ class Commodity:
         return "Commodity(%s, step %.0f, lot %s)" % (self.symbol, self.step, self.lot)
 
 
+#: MCX lot sizes - the contract multiplier in the commodity's natural unit
+#: (barrels / grams / kg / mmBtu).  The scrip master's SEM_LOT_UNITS is a
+#: placeholder ("1.0"), so these come from the public MCX contract specs and
+#: should be VERIFIED against the margin calculator before any live order is
+#: sized off them.
 COMMODITIES = {
-    "CRUDEOIL": Commodity("CRUDEOIL", "CRUDEOIL", 50.0, None, "Crude Oil"),
-    "GOLDM": Commodity("GOLDM", "GOLDM", 500.0, None, "Gold Mini"),
-    "SILVERM": Commodity("SILVERM", "SILVERM", 1000.0, None, "Silver Mini"),
-    "NATURALGAS": Commodity("NATURALGAS", "NATURALGAS", 5.0, None, "Natural Gas"),
+    "CRUDEOIL": Commodity("CRUDEOIL", "CRUDEOIL", 50.0, 100, "Crude Oil"),
+    "GOLDM": Commodity("GOLDM", "GOLDM", 500.0, 100, "Gold Mini"),
+    "SILVERM": Commodity("SILVERM", "SILVERM", 1000.0, 5, "Silver Mini"),
+    "NATURALGAS": Commodity("NATURALGAS", "NATURALGAS", 5.0, 1250, "Natural Gas"),
 }
 
 
