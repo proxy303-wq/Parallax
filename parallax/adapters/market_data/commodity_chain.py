@@ -1,19 +1,13 @@
-"""Assemble an MCX commodity option chain from the scrip master + LTP feed.
+"""MCX commodity option chain via the /optionchain endpoint.
 
-Commodity options have no index-style /optionchain endpoint, so the chain is
-built in two steps:
+Confirmed: Dhan's /optionchain serves MCX commodity options when given the
+futures contract as the underlying - UnderlyingScrip = the FUTCOM security id,
+UnderlyingSeg = "MCX_COMM".  It returns the full strike grid with bid/ask, IV,
+OI, volume and greeks in ONE call, exactly like the index chain, so there is no
+need to assemble strikes from the scrip master and price them via LTP.
 
-  1. scrip master  -> the strike grid and security ids for one expiry
-  2. /marketfeed/ltp -> last-traded price per security id, batched
-
-The "spot" for a commodity is the FUTURES price.  Commodity options expire a
-few days BEFORE the futures they settle into (e.g. crude option 15th, future
-19th), so the underlying future is the one whose expiry is the nearest date
-on or after the option's expiry - not an exact-date match.
-
-Only the strikes near the money are fetched: a full commodity chain is over a
-thousand contracts and blows through the marketfeed rate limit, while a
-condor only ever needs a couple of dozen strikes around the ATM.
+The futures id is still resolved from the scrip master (the future expiring
+just AFTER the option expiry is the one the option settles into).
 """
 from __future__ import annotations
 
@@ -30,6 +24,7 @@ from parallax.adapters.broker.dhan_auth import active_token
 from parallax.config.commodities import (FUTURE_INSTRUMENT, MCX_SEGMENT,
                                          OPTION_INSTRUMENT, spec)
 
+OPTIONCHAIN_URL = "https://api.dhan.co/v2/optionchain"
 LTP_URL = "https://api.dhan.co/v2/marketfeed/ltp"
 BATCH = 60
 
@@ -50,11 +45,7 @@ def find_scrip_master() -> str:
 
 
 def _load_symbol(symbol: str) -> tuple[dict, dict]:
-    """Read one commodity's contracts once.
-
-    Returns (futures, options) where futures = {expiry: id} and
-    options = {expiry: {strike: {"CE": id, "PE": id}}}.
-    """
+    """(futures {expiry: id}, options {expiry: {strike: {CE/PE: id}}}), cached."""
     base = spec(symbol).symbol
     if base in _symbol_cache:
         return _symbol_cache[base]
@@ -104,13 +95,17 @@ def nearest_expiry(symbol: str, today: str | None = None) -> str | None:
     return exps[-1]
 
 
-def contracts(symbol: str, expiry: str) -> tuple[dict, int | None]:
-    """({strike: {"CE": id, "PE": id}}, futures_id) for one option expiry."""
-    futures, options = _load_symbol(symbol)
-    grid = options.get(expiry, {})
+def future_id(symbol: str, expiry: str) -> int | None:
+    """The FUTCOM contract the option settles into (nearest expiry >= option expiry)."""
+    futures, _options = _load_symbol(symbol)
     later = sorted(e for e in futures if e >= expiry)
-    fut_id = futures[later[0]] if later else (futures[sorted(futures)[-1]] if futures else None)
-    return grid, fut_id
+    return futures[later[0]] if later else (futures[sorted(futures)[-1]] if futures else None)
+
+
+def contracts(symbol: str, expiry: str) -> tuple[dict, int | None]:
+    """({strike: {"CE": id, "PE": id}}, futures_id) - kept for the backtest."""
+    _futures, options = _load_symbol(symbol)
+    return options.get(expiry, {}), future_id(symbol, expiry)
 
 
 def fetch_ltp(ids, token: str, client_id: str, retries: int = 3) -> dict[int, float]:
@@ -145,10 +140,10 @@ def fetch_ltp(ids, token: str, client_id: str, retries: int = 3) -> dict[int, fl
 
 def fetch_chain(symbol: str, expiry: str | None = None, token: str | None = None,
                 client_id: str | None = None, window_pct: float = 8.0) -> dict | None:
-    """Chain around the money for one commodity expiry.
+    """Full chain around the money for one commodity expiry, via /optionchain.
 
     Returns {underlying, symbol, expiry, futures, futures_id, atm,
-    rows:[{strike, option_type, security_id, ltp}]} or None.
+    rows:[{strike, option_type, security_id, ltp, bid, ask, iv, oi, volume}]}.
     """
     from parallax.adapters.env import env
     cid = client_id or env("DHAN_CLIENT_ID")
@@ -156,15 +151,48 @@ def fetch_chain(symbol: str, expiry: str | None = None, token: str | None = None
     expiry = expiry or nearest_expiry(symbol)
     if not expiry:
         return None
-    grid, fut_id = contracts(symbol, expiry)
-    if not grid or not fut_id:
+    fid = future_id(symbol, expiry)
+    if not fid:
         return None
-
-    fprice = fetch_ltp([fut_id], tok, cid).get(fut_id, 0.0)
+    body = json.dumps({"UnderlyingScrip": int(fid), "UnderlyingSeg": MCX_SEGMENT,
+                       "Expiry": expiry}).encode()
+    for attempt in range(3):
+        req = urllib.request.Request(OPTIONCHAIN_URL, data=body,
+                                     headers={"access-token": tok, "client-id": cid,
+                                              "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = (json.loads(r.read().decode()) or {}).get("data") or {}
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt < 2:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            raise
+    fprice = float(data.get("last_price") or 0.0)
     if not fprice:
         return None
-
-    strikes = sorted(grid)
+    oc = data.get("oc") or {}
+    rows = []
+    for strike_str, legs in oc.items():
+        strike = float(strike_str)
+        for otype in ("ce", "pe"):
+            leg = legs.get(otype) or {}
+            ltp = leg.get("last_price")
+            if not ltp:
+                continue
+            iv = float(leg.get("implied_volatility") or 0.0)
+            if iv > 1.0:
+                iv /= 100.0
+            rows.append({
+                "strike": strike, "option_type": otype.upper(),
+                "security_id": leg.get("security_id"), "ltp": float(ltp),
+                "oi": int(leg.get("oi") or 0), "volume": int(leg.get("volume") or 0),
+                "iv": iv,
+                "bid": float(leg.get("top_bid_price") or 0.0),
+                "ask": float(leg.get("top_ask_price") or 0.0),
+            })
+    strikes = sorted(set(r["strike"] for r in rows))
     atm = min(strikes, key=lambda s: abs(s - fprice))
     lo = fprice * (1.0 - window_pct / 100.0)
     hi = fprice * (1.0 + window_pct / 100.0)
@@ -173,22 +201,7 @@ def fetch_chain(symbol: str, expiry: str | None = None, token: str | None = None
         near = sorted(sorted(strikes, key=lambda s: abs(s - fprice))[:120])
     if len(near) < 5:
         near = sorted(sorted(strikes, key=lambda s: abs(s - fprice))[:5])
-
-    ids = [fut_id]
-    for s in near:
-        for otype in ("CE", "PE"):
-            sid = grid[s].get(otype)
-            if sid:
-                ids.append(sid)
-    prices = fetch_ltp(ids, tok, cid)
-
-    rows = []
-    for strike in near:
-        for otype in ("CE", "PE"):
-            sid = grid[strike].get(otype)
-            if sid:
-                rows.append({"strike": strike, "option_type": otype,
-                             "security_id": sid, "ltp": prices.get(sid, 0.0)})
+    rows = [r for r in rows if r["strike"] in near]
     return {"underlying": spec(symbol).label, "symbol": spec(symbol).symbol,
-            "expiry": expiry, "futures": fprice, "futures_id": fut_id,
+            "expiry": expiry, "futures": fprice, "futures_id": fid,
             "atm": atm, "rows": rows}

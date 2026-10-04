@@ -24,7 +24,11 @@ def condor_from_chain(ch: dict, short_off: int, wing: int) -> dict | None:
     lc_r, lp_r = legs.get((lc, "CE")), legs.get((lp, "PE"))
     if not all((sc_r, sp_r, lc_r, lp_r)):
         return None
-    credit = sc_r["ltp"] + sp_r["ltp"] - lc_r["ltp"] - lp_r["ltp"]
+    sc_px = sc_r.get("bid") or sc_r["ltp"]      # sell at bid
+    sp_px = sp_r.get("bid") or sp_r["ltp"]
+    lc_px = lc_r.get("ask") or lc_r["ltp"]      # buy at ask
+    lp_px = lp_r.get("ask") or lp_r["ltp"]
+    credit = sc_px + sp_px - lc_px - lp_px
     width = wing * step
     lot = spec(ch["symbol"]).lot or 1
     return {
