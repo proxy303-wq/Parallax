@@ -6,6 +6,7 @@ workers.  Run with:  uvicorn parallax.web.app:app
 """
 from __future__ import annotations
 
+import os
 import time
 
 from fastapi import FastAPI, Form
@@ -13,7 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from parallax.adapters.market_data.commodity_chain import fetch_chain
 from parallax.apps.ops.commodity_collar import collar_from_chain
-from parallax.config.commodities import COMMODITIES, spec
+from parallax.config.commodities import BOOK, COMMODITIES, spec
 from parallax.web.store import JournalStore
 
 app = FastAPI(title="PARALLAX", docs_url=None, redoc_url=None)
@@ -321,9 +322,40 @@ def _commodity_card(symbol: str) -> str:
                  "MCX futures option · expires " + ch["expiry"])
 
 
+COMMODITY_DB = os.environ.get("PARALLAX_COMMODITY_DB", "/opt/parallax/commodity.db")
+
+
+def _commodity_book():
+    """The separate Rs10L paper book: balance, P&L, positions, journal."""
+    s = JournalStore(COMMODITY_DB)
+    summ = s.summary()
+    total = summ["total_pnl"]
+    cls = "pos" if total >= 0 else "neg"
+    body = ("<div class='grid'>"
+            + _stat("Paper balance", "Rs" + _fmt(s.paper_capital()))
+            + _stat("P&L", "Rs{:+,.0f}".format(total), cls)
+            + _stat("Trades", str(summ["n_trades"]))
+            + "</div>")
+    pos = s.positions()
+    if pos:
+        rows = "".join(f"<tr><td>{p['instrument']}</td><td>{p['side']}</td>"
+                       f"<td>{_fmt(p['qty'])}</td><td>{_fmt(p['entry'], 2)}</td></tr>"
+                       for p in pos)
+        body += "<table><tr><th>Instrument</th><th>Side</th><th>Qty</th><th>Credit</th></tr>" + rows + "</table>"
+    trades = s.trades(limit=8)
+    if trades:
+        j = "".join(f"<tr><td>{_ist_stamp(t['ts'])}</td><td>{t['instrument']}</td>"
+                    f"<td class='{'pos' if t['pnl'] > 0 else 'neg'}'>{t['pnl']:+,.0f}</td>"
+                    f"<td>{t['outcome']}</td></tr>" for t in trades)
+        body += "<table><tr><th>Time</th><th>Instrument</th><th>P&amp;L</th><th>Outcome</th></tr>" + j + "</table>"
+    return _card("Commodity Book (paper)", body,
+                 "Separate Rs10L paper account · 9/2 condors · Gold Mini + Crude Mini")
+
+
 @app.get("/commodity-options", response_class=HTMLResponse)
 def commodity_options():
-    body = "".join(_commodity_card(s) for s in COMMODITIES)
+    body = _commodity_book()
+    body += "".join(_commodity_card(s) for s in BOOK["lots"])
     return _page("Commodity Options", "commodity-options", body)
 
 
