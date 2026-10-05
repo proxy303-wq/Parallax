@@ -33,7 +33,7 @@ def test_book_shape_and_sizing():
     assert BOOK["paper_balance"] == 1_000_000.0
     assert book_lots("GOLDM") == 3
     assert book_lots("crudeoilm") == 35
-    assert book_lots("NATGASMINI") == 8
+    assert book_lots("NATGASMINI") == 1   # dropped from the book -> default 1
     assert book_lots("UNKNOWN") == 1
 
 

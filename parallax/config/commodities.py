@@ -63,15 +63,15 @@ COMMODITIES = {
 }
 
 
-#: The commodity condor book.  Shape 9/2 (short_off 9 strikes, wing 2), Gold Mini
-#: 3 lots, and Crude Mini / Nat Gas Mini sized to carry roughly the same rupee
-#: risk as Gold (Gold 3 lots ~ Rs18.8k max loss -> Crude 35 lots ~ Rs18.6k,
-#: NatGas 8 lots ~ Rs17.9k).  A separate Rs10L paper balance, independent of the
-#: index book's own paper account.
+#: The commodity condor book.  Shape 9/2 (short_off 9 strikes, wing 2).  Gold
+#: Mini 3 lots and Crude Mini 35 lots, sized to carry roughly the same rupee
+#: risk (~Rs18.8k max loss each).  A separate Rs10L paper balance, independent
+#: of the index book's own paper account.  Copper / Zinc / NatGas were dropped:
+#: their far-OTM options are too illiquid to clear the spread at 9 strikes out.
 BOOK = {
     "short_off": 9,
     "wing": 2,
-    "lots": {"GOLDM": 3, "CRUDEOILM": 35, "NATGASMINI": 8},
+    "lots": {"GOLDM": 3, "CRUDEOILM": 35},
     "paper_balance": 1_000_000.0,
 }
 
